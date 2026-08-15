@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="theme-color" content="#0f4c81">
+<title>Gestão de Armazéns</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<header class="topbar" id="topbar" hidden>
+  <div class="topbar__brand">
+    <span class="topbar__mark">GA</span>
+    <div class="topbar__meta">
+      <strong id="topbarUnidade">—</strong>
+      <span id="topbarUsuario">—</span>
+    </div>
+  </div>
+  <button class="btn btn--ghost btn--sm" id="btnLogout">Sair</button>
+</header>
+
+<main id="app" class="app"></main>
+
+<nav class="tabbar" id="tabbar" hidden></nav>
+
+<script src="app.js"></script>
+</body>
+</html>

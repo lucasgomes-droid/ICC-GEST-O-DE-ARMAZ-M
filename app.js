@@ -226,6 +226,31 @@ function photoField(container, opts) {
 }
 
 // Botões SIM/NÃO
+// Escolha única entre N opções (ex: Conforme/Não conforme, ou uma lista de
+// urgência) — genérico, usado no formulário especial da balança.
+function choiceField(container, opts) {
+  const cols = opts.columns || 2;
+  const wrap = el(
+    '<div class="field">' +
+      '<label>' + escapeHtml(opts.label) + (opts.required ? ' *' : '') + '</label>' +
+      '<div class="option-grid" style="grid-template-columns:repeat(' + cols + ',1fr)">' +
+        opts.options.map(function (o, i) { return '<button type="button" class="option-btn" data-i="' + i + '" style="text-align:left">' + escapeHtml(o.label) + '</button>'; }).join('') +
+      '</div>' +
+    '</div>'
+  );
+  let value = null;
+  const btns = wrap.querySelectorAll('.option-btn');
+  btns.forEach(function (b, i) {
+    b.onclick = function () {
+      value = opts.options[i].value;
+      btns.forEach(function (x) { x.classList.remove('is-selected'); });
+      b.classList.add('is-selected');
+    };
+  });
+  container.appendChild(wrap);
+  return { node: wrap, getValue: function () { return value; } };
+}
+
 function yesNoField(container, label) {
   const wrap = el(
     '<div class="field">' +
@@ -318,6 +343,8 @@ function render() {
     registrarPendencia: renderRegistrarPendencia,
     dashCarunchos: renderDashCarunchos,
     dashInspecoes: renderDashInspecoes,
+    relatorios: renderRelatorios,
+    relatorioDetalhe: renderRelatorioDetalhe,
     dashChecklist: renderDashChecklist,
     dashPendencias: renderDashPendencias
   };
@@ -827,12 +854,44 @@ function stepRevisao(w) {
 
 // ------------------------- CHECKLIST DE LIMPEZA -------------------------
 
-const CHECKLIST_ITENS = {
-  DIARIO: ['Piso', 'Mesa', 'Aspirador de pó'],
-  SEMANAL: ['Envolvedora', 'Extintores', 'Painel elétrico', 'Portas e paredes', 'Caminhos seguros', 'Carregadores', 'Armários', 'Estrutura de ferro', 'Limpeza dos cantos das paredes'],
-  MENSAL: ['Armadilhas luminosas'],
-  ANUAL: ['Estrutura das áreas', 'Lâmpadas']
-};
+// Formulário especial da Balança (só aparece no armazém configurado como
+// tal na planilha — ver CONFIG_CHECKLIST_ITENS, coluna TIPO = BALANCA).
+// Segue a estrutura do formulário que já era usado: 3 subitens
+// (Conforme/Não conforme), observações, urgência e foto obrigatória.
+function renderBalancaForm(container) {
+  const subitens = ['Calibração de peso', 'Limpeza', 'Manutenção'];
+  const conformeOpcoes = [{ value: 'CONFORME', label: 'Conforme' }, { value: 'NAO_CONFORME', label: 'Não conforme' }];
+  const campos = subitens.map(function (nome) {
+    return { nome: nome, campo: choiceField(container, { label: nome, columns: 2, options: conformeOpcoes }) };
+  });
+  const obs = textField(container, { label: 'Ações corretivas necessárias / Observações adicionais', multiline: true });
+  const manutencao = choiceField(container, {
+    label: 'Necessidade de manutenção imediata?', columns: 1, required: true,
+    options: [
+      { value: 'INOPERANTE', label: 'Sim, a balança está inoperante ou com erro crítico' },
+      { value: 'OBSERVACAO_LEVE', label: 'Não, apenas observações leves ou necessidade de limpeza' },
+      { value: 'CORRETA', label: 'Não, a balança está correta' }
+    ]
+  });
+  const foto = photoField(container, { label: 'Foto da balança', required: true });
+
+  const manutLabel = { INOPERANTE: 'Sim, inoperante/erro crítico', OBSERVACAO_LEVE: 'Não, observações leves', CORRETA: 'Não, balança correta' };
+  const conformeLabel = { CONFORME: 'Conforme', NAO_CONFORME: 'Não conforme' };
+
+  return {
+    validate: function () {
+      return campos.every(function (c) { return !!c.campo.getValue(); }) && !!manutencao.getValue() && !!foto.getValue();
+    },
+    getResultado: function () { return manutencao.getValue(); },
+    getObservacao: function () {
+      const partes = campos.map(function (c) { return c.nome + ': ' + conformeLabel[c.campo.getValue()]; });
+      partes.push('Manutenção imediata: ' + manutLabel[manutencao.getValue()]);
+      if (obs.getValue()) partes.push('Obs: ' + obs.getValue());
+      return partes.join(' | ');
+    },
+    getFoto: function () { return foto.getValue(); }
+  };
+}
 
 function renderChecklist() {
   if (!S.wizard || S.wizard.type !== 'checklist') S.wizard = { type: 'checklist', step: 'periodicidade', armazem: null, periodicidade: null };
@@ -867,46 +926,67 @@ function renderChecklist() {
 
   if (w.step === 'itens') {
     app.appendChild(el(screenHeader('Checklist ' + w.periodicidade, w.armazem)));
-    const card = el('<div class="card stack"></div>');
+    const card = el('<div class="card stack" id="itensCard"><p class="subtle">Carregando itens…</p></div>');
     app.appendChild(card);
-    const itens = CHECKLIST_ITENS[w.periodicidade];
-    const refs = itens.map(function (item) {
-      const box = el('<div class="stack" style="padding-bottom:10px;border-bottom:1px solid var(--line)"></div>');
-      card.appendChild(box);
-      box.appendChild(el('<strong>' + escapeHtml(item) + '</strong>'));
-      const sel = selectField(box, { label: 'Situação', options: [{ value: 'OK', label: 'OK' }, { value: 'NECESSITA_MANUTENCAO', label: 'Necessita manutenção' }, { value: 'NAO_REALIZADO', label: 'Não realizado' }] });
-      const manutWrap = el('<div style="display:none"></div>');
-      box.appendChild(manutWrap);
-      let manutField = null;
-      sel.select.addEventListener('change', function () {
-        manutWrap.style.display = sel.getValue() === 'NECESSITA_MANUTENCAO' ? 'block' : 'none';
-        manutWrap.innerHTML = '';
-        manutField = null;
-        if (sel.getValue() === 'NECESSITA_MANUTENCAO') {
-          manutField = textField(manutWrap, { label: 'Descrever a manutenção necessária *', multiline: true });
-        }
-      });
-      const foto = photoField(box, { label: 'Foto (opcional)' });
-      return { item: item, sel: sel, getManut: function () { return manutField ? manutField.getValue() : ''; }, foto: foto };
-    });
 
-    const btn = el('<button class="btn btn--primary btn--block" style="margin-top:6px">Enviar checklist</button>');
-    card.appendChild(btn);
-    btn.onclick = async function () {
-      const payloadItens = [];
-      for (const r of refs) {
-        if (!r.sel.getValue()) { toast('Preencha a situação de "' + r.item + '"', true); return; }
-        if (r.sel.getValue() === 'NECESSITA_MANUTENCAO' && !r.getManut()) { toast('Descreva a manutenção necessária para "' + r.item + '"', true); return; }
-        payloadItens.push({ item: r.item, resultado: r.sel.getValue(), observacao: r.getManut(), foto: r.foto.getValue() });
+    api('getChecklistItens', { unidade: S.unidade.UNIDADE, armazem: w.armazem, periodicidade: w.periodicidade }).then(function (itens) {
+      card.innerHTML = '';
+      if (!itens.length) {
+        card.appendChild(el('<p class="subtle">Nenhum item de checklist configurado para este armazém/periodicidade.</p>'));
+        return;
       }
-      btn.disabled = true; btn.textContent = 'Enviando…';
-      try {
-        await api('createChecklist', { unidade: S.unidade.UNIDADE, usuario: S.usuario.NOME, idUsuario: S.usuario.ID_USUARIO, armazem: w.armazem, periodicidade: w.periodicidade, itens: payloadItens });
-        toast('Checklist enviado com sucesso!', false, true);
-        S.wizard = null;
-        go('conferenteHome');
-      } catch (e) { btn.disabled = false; btn.textContent = 'Enviar checklist'; }
-    };
+
+      const refs = itens.map(function (it) {
+        const box = el('<div class="stack" style="padding-bottom:10px;border-bottom:1px solid var(--line)"></div>');
+        card.appendChild(box);
+        box.appendChild(el('<strong>' + escapeHtml(it.item) + '</strong>'));
+
+        if (it.tipo === 'BALANCA') {
+          const balanca = renderBalancaForm(box);
+          return {
+            item: it.item, especial: true,
+            validate: balanca.validate,
+            build: function () { return { item: it.item, resultado: balanca.getResultado(), observacao: balanca.getObservacao(), foto: balanca.getFoto() }; }
+          };
+        }
+
+        const sel = selectField(box, { label: 'Situação', options: [{ value: 'OK', label: 'OK' }, { value: 'NECESSITA_MANUTENCAO', label: 'Necessita manutenção' }, { value: 'NAO_REALIZADO', label: 'Não realizado' }] });
+        const manutWrap = el('<div style="display:none"></div>');
+        box.appendChild(manutWrap);
+        let manutField = null;
+        sel.select.addEventListener('change', function () {
+          manutWrap.style.display = sel.getValue() === 'NECESSITA_MANUTENCAO' ? 'block' : 'none';
+          manutWrap.innerHTML = '';
+          manutField = null;
+          if (sel.getValue() === 'NECESSITA_MANUTENCAO') {
+            manutField = textField(manutWrap, { label: 'Descrever a manutenção necessária *', multiline: true });
+          }
+        });
+        const foto = photoField(box, { label: 'Foto (opcional)' });
+        return {
+          item: it.item, especial: false,
+          validate: function () { return !!sel.getValue() && (sel.getValue() !== 'NECESSITA_MANUTENCAO' || !!(manutField && manutField.getValue())); },
+          build: function () { return { item: it.item, resultado: sel.getValue(), observacao: manutField ? manutField.getValue() : '', foto: foto.getValue() }; }
+        };
+      });
+
+      const btn = el('<button class="btn btn--primary btn--block" style="margin-top:6px">Enviar checklist</button>');
+      card.appendChild(btn);
+      btn.onclick = async function () {
+        const payloadItens = [];
+        for (const r of refs) {
+          if (!r.validate()) { toast('Preencha corretamente o item "' + r.item + '"', true); return; }
+          payloadItens.push(r.build());
+        }
+        btn.disabled = true; btn.textContent = 'Enviando…';
+        try {
+          await api('createChecklist', { unidade: S.unidade.UNIDADE, usuario: S.usuario.NOME, idUsuario: S.usuario.ID_USUARIO, armazem: w.armazem, periodicidade: w.periodicidade, itens: payloadItens });
+          toast('Checklist enviado com sucesso!', false, true);
+          S.wizard = null;
+          go('conferenteHome');
+        } catch (e) { btn.disabled = false; btn.textContent = 'Enviar checklist'; }
+      };
+    }).catch(function () {});
   }
 }
 
@@ -1081,6 +1161,7 @@ function renderAdminHome() {
     screenHeader('Área administrativa', 'Olá, ' + S.usuario.NOME) +
     '<div class="stack">' +
       menuCard('📅', 'Painel do dia', 'Quais armazéns ainda não fizeram inspeção/limpeza hoje', 'dashInspecoes') +
+      menuCard('📄', 'Relatórios', 'Baixar relatórios em CSV (Excel/Sheets)', 'relatorios') +
       menuCard('✅', 'Validação de inspeções', 'Revisar inspeções dos conferentes', 'validacaoInspecoes') +
       menuCard('➕', 'Registrar pendência', 'Abrir uma pendência manualmente', 'registrarPendencia') +
       menuCard('📋', 'Dashboard de pendências', 'Status e distribuição', 'dashPendencias') +
@@ -1316,6 +1397,173 @@ async function renderDashInspecoes() {
       ));
     });
   }
+}
+
+// ------------------------- RELATÓRIOS (download em CSV) -------------------------
+// Reaproveita as mesmas actions dos dashboards (já respeitam a unidade da
+// sessão e aceitam os mesmos filtros de período/armazém).
+
+const REPORTS = {
+  carunchos: {
+    titulo: 'Carunchos', icone: '🐞',
+    descricao: 'Todas as capturas registradas nas inspeções',
+    action: 'getDashboardCarunchos',
+    getRows: function (d) { return d.registros; },
+    colunas: [['ID_CAPTURA', 'ID'], ['DATA', 'Data'], ['ARMAZEM', 'Armazém'], ['ARMADILHA', 'Armadilha'], ['QUANTIDADE', 'Quantidade'], ['PRODUTO_PROXIMO', 'Produto próximo'], ['BAIA', 'Baia'], ['OBSERVACAO', 'Observação'], ['USUARIO', 'Conferente']]
+  },
+  checklist: {
+    titulo: 'Checklist de limpeza', icone: '🧹',
+    descricao: 'Itens de checklist preenchidos pelos conferentes',
+    action: 'getDashboardChecklist',
+    getRows: function (d) { return d.registros; },
+    colunas: [['ID_CHECKLIST', 'ID'], ['DATA', 'Data'], ['HORA', 'Hora'], ['ARMAZEM', 'Armazém'], ['PERIODICIDADE', 'Periodicidade'], ['ITEM', 'Item'], ['RESULTADO', 'Resultado'], ['OBSERVACAO', 'Observação'], ['USUARIO', 'Conferente']]
+  },
+  inspecoes: {
+    titulo: 'Inspeções', icone: '🔎',
+    descricao: 'Inspeções dos galpões e seu status de validação',
+    action: 'getInspecoes',
+    getRows: function (d) { return d; },
+    colunas: [['ID_INSPECAO', 'ID'], ['DATA', 'Data'], ['HORA', 'Hora'], ['ARMAZEM', 'Armazém'], ['USUARIO', 'Conferente'], ['RESULTADO', 'Resultado'], ['OBSERVACAO', 'Observação']]
+  },
+  pendencias: {
+    titulo: 'Pendências', icone: '📋',
+    descricao: 'Pendências abertas, em tratamento e finalizadas',
+    action: 'getDashboardPendencias',
+    getRows: function (d) { return d.registros; },
+    colunas: [['ID_PENDENCIA', 'ID'], ['DATA_ABERTURA', 'Data abertura'], ['ARMAZEM', 'Armazém'], ['TIPO', 'Tipo'], ['DESCRICAO', 'Descrição'], ['RESPONSAVEL', 'Responsável'], ['CONFERENTE', 'Conferente'], ['STATUS', 'Status'], ['DATA_RESOLUCAO', 'Data resolução'], ['ADMIN_VALIDADOR', 'Validado por'], ['DATA_VALIDACAO', 'Data validação']]
+  }
+};
+
+function renderRelatorios() {
+  appendHtml(app, screenHeader('Relatórios', S.unidade.UNIDADE, 'Baixe em CSV (abre no Excel/Google Sheets)') + '<div class="stack"></div>');
+  const wrap = app.querySelector('.stack:last-child');
+  Object.keys(REPORTS).forEach(function (key) {
+    const r = REPORTS[key];
+    const card = el(menuCard(r.icone, r.titulo, r.descricao, 'x'));
+    card.onclick = function () { go('relatorioDetalhe', { tipoRelatorio: key }); };
+    wrap.appendChild(card);
+  });
+}
+
+async function renderRelatorioDetalhe() {
+  const cfg = REPORTS[S.tipoRelatorio];
+  app.appendChild(el(screenHeader('Relatório · ' + cfg.titulo, S.unidade.UNIDADE)));
+
+  const filterWrap = el(
+    '<div class="filters">' +
+      '<select id="fPeriodo">' +
+        '<option value="tudo">Todo o período</option>' +
+        '<option value="semana">Esta semana</option>' +
+        '<option value="mes">Este mês</option>' +
+        '<option value="custom">Período personalizado</option>' +
+      '</select>' +
+      '<select id="fArmazem"><option value="">Todos os armazéns</option></select>' +
+    '</div>'
+  );
+  app.appendChild(filterWrap);
+  const customWrap = el(
+    '<div class="filters" id="customDates" style="display:none">' +
+      '<input type="date" id="fDataInicial">' +
+      '<input type="date" id="fDataFinal">' +
+      '<button class="btn btn--outline btn--sm" id="btnAplicar">Aplicar</button>' +
+    '</div>'
+  );
+  app.appendChild(customWrap);
+
+  const body = el('<div class="card stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
+  app.appendChild(body);
+
+  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const selArmazem = document.getElementById('fArmazem');
+  armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
+
+  const selPeriodo = document.getElementById('fPeriodo');
+  const customDates = document.getElementById('customDates');
+  let ultimasLinhas = [];
+
+  selPeriodo.onchange = function () {
+    customDates.style.display = selPeriodo.value === 'custom' ? 'flex' : 'none';
+    if (selPeriodo.value !== 'custom') load();
+  };
+  document.getElementById('btnAplicar').onclick = load;
+  selArmazem.onchange = load;
+
+  async function load() {
+    body.innerHTML = '<p class="subtle">Carregando…</p>';
+    let range = { dataInicial: '', dataFinal: '' };
+    if (selPeriodo.value === 'custom') {
+      const ini = document.getElementById('fDataInicial').value;
+      const fim = document.getElementById('fDataFinal').value;
+      if (ini) range.dataInicial = dateToBR(new Date(ini + 'T00:00:00'));
+      if (fim) range.dataFinal = dateToBR(new Date(fim + 'T00:00:00'));
+    } else {
+      range = periodoRange(selPeriodo.value);
+    }
+    const d = await api(cfg.action, {
+      unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
+      dataInicial: range.dataInicial, dataFinal: range.dataFinal
+    }).catch(function () { return null; });
+    body.innerHTML = '';
+    if (!d) return;
+    ultimasLinhas = cfg.getRows(d) || [];
+
+    body.appendChild(el('<div class="row between"><span class="subtle">Registros encontrados</span><span class="badge-count">' + ultimasLinhas.length + '</span></div>'));
+    const btnBaixar = el('<button class="btn btn--primary btn--block" style="margin-top:10px">⬇ Baixar CSV</button>');
+    body.appendChild(btnBaixar);
+    btnBaixar.onclick = function () {
+      if (!ultimasLinhas.length) { toast('Nenhum registro para baixar com esses filtros', true); return; }
+      const nomeArquivo = 'relatorio_' + S.tipoRelatorio + '_' + S.unidade.UNIDADE.replace(/\s+/g, '_') + '_' + dateToBR(new Date()).replace(/\//g, '-') + '.csv';
+      downloadCSV(nomeArquivo, cfg.colunas, ultimasLinhas);
+    };
+
+    if (ultimasLinhas.length) {
+      body.appendChild(el('<div class="divider" style="margin-top:6px"></div>'));
+      body.appendChild(el('<p class="subtle">Pré-visualização (10 primeiros registros):</p>'));
+      const tableWrap = el('<div style="overflow-x:auto"></div>');
+      body.appendChild(tableWrap);
+      tableWrap.appendChild(buildPreviewTable(cfg.colunas, ultimasLinhas.slice(0, 10)));
+    }
+  }
+  load();
+}
+
+function buildPreviewTable(colunas, linhas) {
+  const table = document.createElement('table');
+  table.className = 'report-table';
+  const thead = document.createElement('tr');
+  colunas.forEach(function (c) { thead.appendChild(el('<th>' + escapeHtml(c[1]) + '</th>')); });
+  table.appendChild(thead);
+  linhas.forEach(function (linha) {
+    const tr = document.createElement('tr');
+    colunas.forEach(function (c) { tr.appendChild(el('<td>' + escapeHtml(linha[c[0]]) + '</td>')); });
+    table.appendChild(tr);
+  });
+  return table;
+}
+
+// Gera um CSV no navegador e dispara o download — sem precisar de backend.
+function downloadCSV(filename, colunas, linhas) {
+  const esc = function (v) {
+    v = v === undefined || v === null ? '' : String(v);
+    if (v.indexOf(',') > -1 || v.indexOf('"') > -1 || v.indexOf('\n') > -1) {
+      v = '"' + v.replace(/"/g, '""') + '"';
+    }
+    return v;
+  };
+  const lines = [colunas.map(function (c) { return esc(c[1]); }).join(',')];
+  linhas.forEach(function (linha) {
+    lines.push(colunas.map(function (c) { return esc(linha[c[0]]); }).join(','));
+  });
+  const csv = '\uFEFF' + lines.join('\r\n'); // BOM: acentos abrem certo no Excel
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  toast('Relatório baixado!', false, true);
 }
 
 async function renderDashCarunchos() {

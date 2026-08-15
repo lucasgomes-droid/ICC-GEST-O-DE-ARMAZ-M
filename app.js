@@ -995,26 +995,62 @@ function renderChecklist() {
 async function renderMinhasPendencias() {
   app.appendChild(el(screenHeader('Minhas pendências', 'Direcionadas a ' + S.usuario.NOME)));
   const filterWrap = el(
-    '<div class="filters"><select id="fStatus">' +
-      '<option value="">Todos os status</option>' +
-      '<option value="ABERTA">Aberta</option>' +
-      '<option value="EM_TRATAMENTO">Em tratamento</option>' +
-      '<option value="AGUARDANDO_VALIDACAO">Aguardando validação</option>' +
-      '<option value="FINALIZADA">Finalizada</option>' +
-    '</select></div>'
+    '<div class="filters">' +
+      '<select id="fStatus">' +
+        '<option value="">Todos os status</option>' +
+        '<option value="ABERTA">Aberta</option>' +
+        '<option value="EM_TRATAMENTO">Em tratamento</option>' +
+        '<option value="AGUARDANDO_VALIDACAO">Aguardando validação</option>' +
+        '<option value="FINALIZADA">Finalizada</option>' +
+      '</select>' +
+      '<select id="fPeriodo">' +
+        '<option value="tudo">Todo o período</option>' +
+        '<option value="semana">Esta semana</option>' +
+        '<option value="mes">Este mês</option>' +
+        '<option value="custom">Período personalizado</option>' +
+      '</select>' +
+    '</div>'
   );
   app.appendChild(filterWrap);
+  const customWrap = el(
+    '<div class="filters" id="customDates" style="display:none">' +
+      '<input type="date" id="fDataInicial">' +
+      '<input type="date" id="fDataFinal">' +
+      '<button class="btn btn--outline btn--sm" id="btnAplicar">Aplicar</button>' +
+    '</div>'
+  );
+  app.appendChild(customWrap);
   const listWrap = el('<div class="stack" id="list" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
   app.appendChild(listWrap);
 
+  const selPeriodo = document.getElementById('fPeriodo');
+  const customDates = document.getElementById('customDates');
+  selPeriodo.onchange = function () {
+    customDates.style.display = selPeriodo.value === 'custom' ? 'flex' : 'none';
+    if (selPeriodo.value !== 'custom') load();
+  };
+  document.getElementById('btnAplicar').onclick = load;
+  document.getElementById('fStatus').onchange = load;
+
   async function load() {
     listWrap.innerHTML = '<p class="subtle">Carregando…</p>';
+    let range = { dataInicial: '', dataFinal: '' };
+    if (selPeriodo.value === 'custom') {
+      const ini = document.getElementById('fDataInicial').value;
+      const fim = document.getElementById('fDataFinal').value;
+      if (ini) range.dataInicial = dateToBR(new Date(ini + 'T00:00:00'));
+      if (fim) range.dataFinal = dateToBR(new Date(fim + 'T00:00:00'));
+    } else {
+      range = periodoRange(selPeriodo.value);
+    }
     try {
-      const pend = await api('getPendencias', { unidade: S.unidade.UNIDADE, idResponsavel: S.usuario.ID_USUARIO, status: document.getElementById('fStatus').value });
+      const pend = await api('getPendencias', {
+        unidade: S.unidade.UNIDADE, idResponsavel: S.usuario.ID_USUARIO, status: document.getElementById('fStatus').value,
+        dataInicial: range.dataInicial, dataFinal: range.dataFinal
+      });
       renderPendenciasList(listWrap, pend, function (p) { go('pendenciaDetalhe', { pendenciaAtual: p }); });
     } catch (e) {}
   }
-  document.getElementById('fStatus').onchange = load;
   load();
 }
 
@@ -1113,6 +1149,16 @@ function renderPendenciaDetalhe() {
 
 // ------------------------- HISTÓRICO (conferente) -------------------------
 
+// Converte "dd/MM/yyyy" (ou "dd/MM/yyyy HH:mm") em Date, para filtrar
+// listas já carregadas no navegador (sem precisar ir de novo ao backend).
+function parseBR(str) {
+  if (!str) return null;
+  const datePart = String(str).split(' ')[0];
+  const parts = datePart.split('/');
+  if (parts.length !== 3) return null;
+  return new Date(parts[2], parts[1] - 1, parts[0]);
+}
+
 async function renderHistorico() {
   app.appendChild(el(screenHeader('Histórico', S.usuario.NOME)));
   const tabs = el(
@@ -1122,15 +1168,59 @@ async function renderHistorico() {
     '</div>'
   );
   app.appendChild(tabs);
+
+  const filterWrap = el(
+    '<div class="filters" style="margin-top:10px">' +
+      '<select id="fPeriodo">' +
+        '<option value="tudo">Todo o período</option>' +
+        '<option value="semana">Esta semana</option>' +
+        '<option value="mes">Este mês</option>' +
+        '<option value="custom">Período personalizado</option>' +
+      '</select>' +
+    '</div>'
+  );
+  app.appendChild(filterWrap);
+  const customWrap = el(
+    '<div class="filters" id="customDates" style="display:none">' +
+      '<input type="date" id="fDataInicial">' +
+      '<input type="date" id="fDataFinal">' +
+      '<button class="btn btn--outline btn--sm" id="btnAplicar">Aplicar</button>' +
+    '</div>'
+  );
+  app.appendChild(customWrap);
+
   const listWrap = el('<div class="stack" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
   app.appendChild(listWrap);
 
   const data = await api('getHistoricoConferente', { idUsuario: S.usuario.ID_USUARIO }).catch(function () { return { inspecoes: [], checklists: [] }; });
+  let abaAtiva = 'inspecoes';
+
+  function dentroDoPeriodo(dataStr) {
+    const selPeriodo = document.getElementById('fPeriodo').value;
+    if (selPeriodo === 'tudo') return true;
+    const d = parseBR(dataStr);
+    if (!d) return true;
+    let inicio, fim;
+    if (selPeriodo === 'custom') {
+      const iniInput = document.getElementById('fDataInicial').value;
+      const fimInput = document.getElementById('fDataFinal').value;
+      inicio = iniInput ? new Date(iniInput + 'T00:00:00') : null;
+      fim = fimInput ? new Date(fimInput + 'T23:59:59') : null;
+    } else {
+      const range = periodoRange(selPeriodo);
+      inicio = parseBR(range.dataInicial);
+      fim = parseBR(range.dataFinal);
+    }
+    if (inicio && d < inicio) return false;
+    if (fim && d > fim) return false;
+    return true;
+  }
 
   function showInspecoes() {
     listWrap.innerHTML = '';
-    if (!data.inspecoes.length) { listWrap.appendChild(el('<div class="empty"><span class="ic">🔎</span>Nenhuma inspeção registrada.</div>')); return; }
-    data.inspecoes.slice().reverse().forEach(function (i) {
+    const filtradas = data.inspecoes.filter(function (i) { return dentroDoPeriodo(i.DATA); });
+    if (!filtradas.length) { listWrap.appendChild(el('<div class="empty"><span class="ic">🔎</span>Nenhuma inspeção encontrada nesse período.</div>')); return; }
+    filtradas.slice().reverse().forEach(function (i) {
       listWrap.appendChild(el(
         '<div class="list-item" style="cursor:default"><span><span class="shiplabel">' + escapeHtml(i.ID_INSPECAO) + '</span>' +
         '<div class="list-item__title" style="margin-top:6px">' + escapeHtml(i.ARMAZEM) + '</div>' +
@@ -1140,18 +1230,26 @@ async function renderHistorico() {
   }
   function showChecklists() {
     listWrap.innerHTML = '';
-    if (!data.checklists.length) { listWrap.appendChild(el('<div class="empty"><span class="ic">🧹</span>Nenhum checklist registrado.</div>')); return; }
-    data.checklists.slice().reverse().forEach(function (c) {
+    const filtrados = data.checklists.filter(function (c) { return dentroDoPeriodo(c.DATA); });
+    if (!filtrados.length) { listWrap.appendChild(el('<div class="empty"><span class="ic">🧹</span>Nenhum checklist encontrado nesse período.</div>')); return; }
+    filtrados.slice().reverse().forEach(function (c) {
       listWrap.appendChild(el(
         '<div class="list-item" style="cursor:default"><span><span class="list-item__title">' + escapeHtml(c.ARMAZEM) + ' — ' + escapeHtml(c.ITEM) + '</span>' +
         '<div class="list-item__sub">' + escapeHtml(c.PERIODICIDADE) + ' · ' + escapeHtml(c.DATA) + ' · ' + escapeHtml(c.RESULTADO) + '</div></span></div>'
       ));
     });
   }
+  function refresh() { abaAtiva === 'inspecoes' ? showInspecoes() : showChecklists(); }
+
   tabs.querySelectorAll('button').forEach(function (b) {
-    b.onclick = function () { b.dataset.t === 'inspecoes' ? showInspecoes() : showChecklists(); };
+    b.onclick = function () { abaAtiva = b.dataset.t; refresh(); };
   });
-  showInspecoes();
+  document.getElementById('fPeriodo').onchange = function () {
+    document.getElementById('customDates').style.display = this.value === 'custom' ? 'flex' : 'none';
+    if (this.value !== 'custom') refresh();
+  };
+  document.getElementById('btnAplicar').onclick = refresh;
+  refresh();
 }
 
 // ------------------------- ADMIN: HOME -------------------------
@@ -1328,6 +1426,9 @@ async function renderRegistrarPendencia() {
         tipo: tipoSel.getValue() === 'Outro' && outroField ? outroField.getValue() : tipoSel.getValue(),
         descricao: descField.getValue(), foto: foto.getValue()
       });
+      if (tipoSel.getValue() === 'Outro' && outroField && outroField.getValue()) {
+        api('adicionarOcorrenciaTipo', { tipo: outroField.getValue() }).catch(function () {});
+      }
       toast('Pendência ' + data.idPendencia + ' registrada para ' + (data.responsavel || 'responsável não definido') + '.', false, true);
       S.pendenciaOrigemInspecao = null;
       go('dashPendencias');
@@ -1508,12 +1609,38 @@ async function renderRelatorioDetalhe() {
     ultimasLinhas = cfg.getRows(d) || [];
 
     body.appendChild(el('<div class="row between"><span class="subtle">Registros encontrados</span><span class="badge-count">' + ultimasLinhas.length + '</span></div>'));
-    const btnBaixar = el('<button class="btn btn--primary btn--block" style="margin-top:10px">⬇ Baixar CSV</button>');
-    body.appendChild(btnBaixar);
+
+    const btnRow = el('<div class="row" style="gap:8px;margin-top:10px"></div>');
+    body.appendChild(btnRow);
+    const btnBaixar = el('<button class="btn btn--primary" style="flex:1">⬇ CSV</button>');
+    const btnPDF = el('<button class="btn btn--accent" style="flex:1">📄 PDF</button>');
+    btnRow.appendChild(btnBaixar);
+    btnRow.appendChild(btnPDF);
+
+    const descricaoPeriodo = selPeriodo.value === 'tudo' ? 'Todo o período'
+      : selPeriodo.value === 'semana' ? 'Esta semana'
+      : selPeriodo.value === 'mes' ? 'Este mês'
+      : (range.dataInicial || '…') + ' até ' + (range.dataFinal || '…');
+
     btnBaixar.onclick = function () {
       if (!ultimasLinhas.length) { toast('Nenhum registro para baixar com esses filtros', true); return; }
       const nomeArquivo = 'relatorio_' + S.tipoRelatorio + '_' + S.unidade.UNIDADE.replace(/\s+/g, '_') + '_' + dateToBR(new Date()).replace(/\//g, '-') + '.csv';
       downloadCSV(nomeArquivo, cfg.colunas, ultimasLinhas);
+    };
+    btnPDF.onclick = async function () {
+      if (!ultimasLinhas.length) { toast('Nenhum registro para baixar com esses filtros', true); return; }
+      btnPDF.disabled = true; btnPDF.textContent = 'Gerando…';
+      try {
+        const resultado = await api('gerarRelatorioPDF', {
+          titulo: cfg.titulo, unidade: S.unidade.UNIDADE, periodo: descricaoPeriodo,
+          colunas: cfg.colunas.map(function (c) { return c[1]; }),
+          chaves: cfg.colunas.map(function (c) { return c[0]; }),
+          linhas: ultimasLinhas
+        });
+        downloadBase64File(resultado.filename, resultado.base64, 'application/pdf');
+        toast('PDF gerado!', false, true);
+      } catch (e) { /* toast já mostrado pelo api() */ }
+      btnPDF.disabled = false; btnPDF.textContent = '📄 PDF';
     };
 
     if (ultimasLinhas.length) {
@@ -1564,6 +1691,23 @@ function downloadCSV(filename, colunas, linhas) {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
   toast('Relatório baixado!', false, true);
+}
+
+// Converte o PDF (vindo em base64 do Apps Script) num arquivo real e
+// dispara o download no navegador.
+function downloadBase64File(filename, base64, mime) {
+  const byteChars = atob(base64);
+  const byteNumbers = new Array(byteChars.length);
+  for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+  const byteArray = new Uint8Array(byteNumbers);
+  const blob = new Blob([byteArray], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 async function renderDashCarunchos() {

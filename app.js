@@ -5,7 +5,7 @@
    ===================================================== */
 
 // >>> COLE AQUI A URL DO SEU APPS SCRIPT WEB APP <<<
-const API_URL = 'COLE_A_URL_DO_SEU_APPS_SCRIPT_AQUI';
+const API_URL = 'https://script.google.com/macros/s/AKfycbyiJF13w6pN6irRpkyKNu_ACFB4it9lTjmcLsE_84MTsehYjJcFdCCHKhxL8v2Mefcu/exec';
 
 const OCORRENCIA_STATUS_LABEL = {
   ABERTA: { label: 'Aberta', cls: 'aberta' },

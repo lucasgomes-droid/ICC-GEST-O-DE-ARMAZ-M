@@ -1407,25 +1407,78 @@ async function renderDashChecklist() {
 
 async function renderDashPendencias() {
   app.appendChild(el(screenHeader('Dashboard de pendências', S.unidade.UNIDADE)));
-  const body = el('<div class="stack" id="body"><p class="subtle">Carregando…</p></div>');
-  app.appendChild(body);
-  const d = await api('getDashboardPendencias', { unidade: S.unidade.UNIDADE }).catch(function () { return null; });
-  body.innerHTML = '';
-  if (!d) return;
-  body.appendChild(el(
-    '<div class="kpi-grid">' +
-      kpi(d.abertas, 'Abertas') + kpi(d.emTratamento, 'Em tratamento') +
-      kpi(d.aguardandoValidacao, 'Aguard. validação') + kpi(d.finalizadas, 'Finalizadas') +
-    '</div>'
-  ));
-  body.appendChild(barCard('Por armazém', d.porArmazem));
-  body.appendChild(barCard('Por ocorrência', d.porOcorrencia));
 
-  const listCard = el('<div class="card stack"><h3 class="title-lg">Pendências recentes</h3></div>');
-  body.appendChild(listCard);
-  const listInner = el('<div class="stack"></div>');
-  listCard.appendChild(listInner);
-  renderPendenciasList(listInner, d.registros.slice(0, 12), function (p) { go('pendenciaDetalhe', { pendenciaAtual: p }); });
+  const filterWrap = el(
+    '<div class="filters">' +
+      '<select id="fPeriodo">' +
+        '<option value="tudo">Todo o período</option>' +
+        '<option value="semana">Esta semana</option>' +
+        '<option value="mes">Este mês</option>' +
+        '<option value="custom">Período personalizado</option>' +
+      '</select>' +
+      '<select id="fArmazem"><option value="">Todos os armazéns</option></select>' +
+    '</div>'
+  );
+  app.appendChild(filterWrap);
+
+  const customWrap = el(
+    '<div class="filters" id="customDates" style="display:none">' +
+      '<input type="date" id="fDataInicial">' +
+      '<input type="date" id="fDataFinal">' +
+      '<button class="btn btn--outline btn--sm" id="btnAplicar">Aplicar</button>' +
+    '</div>'
+  );
+  app.appendChild(customWrap);
+
+  const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
+  app.appendChild(body);
+
+  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const selArmazem = document.getElementById('fArmazem');
+  armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
+
+  const selPeriodo = document.getElementById('fPeriodo');
+  const customDates = document.getElementById('customDates');
+  selPeriodo.onchange = function () {
+    customDates.style.display = selPeriodo.value === 'custom' ? 'flex' : 'none';
+    if (selPeriodo.value !== 'custom') load();
+  };
+  document.getElementById('btnAplicar').onclick = load;
+  selArmazem.onchange = load;
+
+  async function load() {
+    body.innerHTML = '<p class="subtle">Carregando…</p>';
+    let range = { dataInicial: '', dataFinal: '' };
+    if (selPeriodo.value === 'custom') {
+      const ini = document.getElementById('fDataInicial').value;
+      const fim = document.getElementById('fDataFinal').value;
+      if (ini) range.dataInicial = dateToBR(new Date(ini + 'T00:00:00'));
+      if (fim) range.dataFinal = dateToBR(new Date(fim + 'T00:00:00'));
+    } else {
+      range = periodoRange(selPeriodo.value);
+    }
+    const d = await api('getDashboardPendencias', {
+      unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
+      dataInicial: range.dataInicial, dataFinal: range.dataFinal
+    }).catch(function () { return null; });
+    body.innerHTML = '';
+    if (!d) return;
+    body.appendChild(el(
+      '<div class="kpi-grid">' +
+        kpi(d.abertas, 'Abertas') + kpi(d.emTratamento, 'Em tratamento') +
+        kpi(d.aguardandoValidacao, 'Aguard. validação') + kpi(d.finalizadas, 'Finalizadas') +
+      '</div>'
+    ));
+    body.appendChild(barCard('Por armazém', d.porArmazem));
+    body.appendChild(barCard('Por ocorrência', d.porOcorrencia));
+
+    const listCard = el('<div class="card stack"><h3 class="title-lg">Pendências recentes</h3></div>');
+    body.appendChild(listCard);
+    const listInner = el('<div class="stack"></div>');
+    listCard.appendChild(listInner);
+    renderPendenciasList(listInner, d.registros.slice(0, 12), function (p) { go('pendenciaDetalhe', { pendenciaAtual: p }); });
+  }
+  load();
 }
 
 function kpi(value, label) {

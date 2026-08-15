@@ -58,7 +58,10 @@ const S = {
   usuario: null,      // {ID_USUARIO, NOME, TIPO, UNIDADE}
   screen: 'loginUnidade',
   cache: {},
-  wizard: null
+  wizard: null,
+  pendBadgeCount: 0,
+  seenPendIds: null,
+  notifInterval: null
 };
 
 function resetSession() {
@@ -66,8 +69,66 @@ function resetSession() {
   S.usuario = null;
   S.screen = 'loginUnidade';
   S.wizard = null;
+  stopNotificationPolling();
   document.getElementById('topbar').hidden = true;
   document.getElementById('tabbar').hidden = true;
+}
+
+// ------------------------- NOTIFICAÇÕES NA TELA -------------------------
+// Não há como enviar WhatsApp/push de fora do app; isto avisa o conferente
+// enquanto o app estiver aberto no tablet/celular: verifica periodicamente
+// se surgiram pendências novas direcionadas a ele e mostra um aviso na tela
+// + uma bolinha vermelha com a contagem na aba "Pendências".
+
+function startNotificationPolling() {
+  stopNotificationPolling();
+  if (!S.usuario || S.usuario.TIPO !== 'CONFERENTE') return;
+  S.seenPendIds = null; // primeira checagem não deve gerar aviso
+  checkPendenciasNotificacao();
+  S.notifInterval = setInterval(checkPendenciasNotificacao, 45000);
+}
+
+function stopNotificationPolling() {
+  if (S.notifInterval) { clearInterval(S.notifInterval); S.notifInterval = null; }
+  S.pendBadgeCount = 0;
+  S.seenPendIds = null;
+}
+
+async function checkPendenciasNotificacao() {
+  if (!S.usuario || S.usuario.TIPO !== 'CONFERENTE') return;
+  try {
+    const pend = await api('getPendencias', { unidade: S.unidade.UNIDADE, idResponsavel: S.usuario.ID_USUARIO });
+    const ativas = pend.filter(function (p) { return p.STATUS === 'ABERTA' || p.STATUS === 'EM_TRATAMENTO'; });
+    const idsAtuais = ativas.map(function (p) { return p.ID_PENDENCIA; });
+    if (S.seenPendIds) {
+      const novas = idsAtuais.filter(function (id) { return S.seenPendIds.indexOf(id) === -1; });
+      if (novas.length) {
+        const primeira = ativas.find(function (p) { return p.ID_PENDENCIA === novas[0]; });
+        toast('📋 Nova pendência: ' + (primeira ? primeira.TIPO + ' — ' + primeira.ARMAZEM : novas.join(', ')), false, true);
+      }
+    }
+    S.seenPendIds = idsAtuais;
+    S.pendBadgeCount = ativas.length;
+    refreshTabbarBadges();
+  } catch (e) { /* silencioso — não interromper o uso do app */ }
+}
+
+function refreshTabbarBadges() {
+  const tabbar = document.getElementById('tabbar');
+  if (tabbar.hidden) return;
+  const btn = tabbar.querySelector('[data-s="minhasPendencias"]');
+  if (!btn) return;
+  let badge = btn.querySelector('.tab-badge');
+  if (S.pendBadgeCount > 0) {
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'tab-badge';
+      btn.querySelector('.ic').appendChild(badge);
+    }
+    badge.textContent = S.pendBadgeCount > 9 ? '9+' : String(S.pendBadgeCount);
+  } else if (badge) {
+    badge.remove();
+  }
 }
 
 // ------------------------- UI HELPERS -------------------------
@@ -232,6 +293,7 @@ function screenHeader(eyebrow, title, subtitle) {
 // ------------------------- BOOT -------------------------
 
 document.getElementById('btnLogout').onclick = function () { resetSession(); render(); };
+document.getElementById('btnTrocarUnidadeGlobal').onclick = function () { go('trocarUnidadeGlobal'); };
 
 render();
 
@@ -241,6 +303,7 @@ function render() {
   app.innerHTML = '';
   const screens = {
     loginUnidade: renderLoginUnidade,
+    trocarUnidadeGlobal: renderTrocarUnidadeGlobal,
     loginUsuario: renderLoginUsuario,
     loginSenha: renderLoginSenha,
     conferenteHome: renderConferenteHome,
@@ -254,6 +317,7 @@ function render() {
     inspecaoDetalheAdmin: renderInspecaoDetalheAdmin,
     registrarPendencia: renderRegistrarPendencia,
     dashCarunchos: renderDashCarunchos,
+    dashInspecoes: renderDashInspecoes,
     dashChecklist: renderDashChecklist,
     dashPendencias: renderDashPendencias
   };
@@ -272,6 +336,7 @@ function updateChrome() {
   topbar.hidden = false;
   document.getElementById('topbarUnidade').textContent = S.unidade.UNIDADE;
   document.getElementById('topbarUsuario').textContent = S.usuario.NOME + ' · ' + (S.usuario.TIPO === 'ADMIN' ? 'Admin' : 'Conferente');
+  document.getElementById('btnTrocarUnidadeGlobal').hidden = String(S.usuario.UNIDADE).toUpperCase() !== 'TODAS';
 
   tabbar.hidden = false;
   const tabs = S.usuario.TIPO === 'ADMIN'
@@ -289,11 +354,12 @@ function updateChrome() {
       ];
   tabbar.innerHTML = tabs.map(function (t) {
     const active = S.screen === t.s ? ' is-active' : '';
-    return '<button class="' + active.trim() + '" data-s="' + t.s + '"><span class="ic">' + t.ic + '</span>' + t.label + '</button>';
+    return '<button class="' + active.trim() + '" data-s="' + t.s + '"><span class="ic" style="position:relative">' + t.ic + '</span>' + t.label + '</button>';
   }).join('');
   tabbar.querySelectorAll('button').forEach(function (b) {
     b.onclick = function () { go(b.dataset.s); };
   });
+  refreshTabbarBadges();
 }
 
 // ------------------------- LOGIN -------------------------
@@ -320,6 +386,30 @@ async function renderLoginUnidade() {
   } catch (e) { /* toast already shown */ }
 }
 
+// Para Gerente/Coordenador (UNIDADE = TODAS): troca a unidade de trabalho
+// sem precisar sair e logar de novo.
+async function renderTrocarUnidadeGlobal() {
+  app.appendChild(el(
+    screenHeader('Trocar unidade', 'Unidade atual: ' + S.unidade.UNIDADE, 'Você tem acesso a todas as unidades')
+  ));
+  const card = el('<div class="card stack" id="unidadesList"><p class="subtle">Carregando unidades…</p></div>');
+  app.appendChild(card);
+  try {
+    const unidades = await api('getUnidades', {});
+    card.innerHTML = '';
+    unidades.forEach(function (u) {
+      const isAtual = u.UNIDADE === S.unidade.UNIDADE;
+      const item = el(
+        '<button type="button" class="list-item" style="width:100%">' +
+          '<span class="list-item__title">' + escapeHtml(u.UNIDADE) + (isAtual ? ' (atual)' : '') + '</span><span>›</span>' +
+        '</button>'
+      );
+      item.onclick = function () { S.unidade = u; go('adminHome'); };
+      card.appendChild(item);
+    });
+  } catch (e) { /* */ }
+}
+
 async function renderLoginUsuario() {
   appendHtml(app,
     screenHeader('Login · ' + S.unidade.UNIDADE, 'Quem é você?', 'Selecione seu usuário') +
@@ -341,7 +431,7 @@ async function renderLoginUsuario() {
       );
       item.onclick = function () {
         if (u.TIPO === 'ADMIN') { go('loginSenha', { pendingUser: u }); }
-        else { S.usuario = u; go('conferenteHome'); }
+        else { S.usuario = u; startNotificationPolling(); go('conferenteHome'); }
       };
       wrap.appendChild(item);
     });
@@ -432,25 +522,15 @@ function renderInspecao() {
   });
 
   if (w.step === 'goteira') return stepGoteira(w);
-  if (w.step === 'queda') return stepSimNao(w, {
-    key: 'queda', title: 'Existem cargas ou baias com risco de queda?', next: 'tombamento',
-    onYes: function (data) { w.ocorrencias.push({ tipo: 'Risco de queda', descricao: 'Local: ' + data.local + ' — Ações: ' + data.acoes, foto: data.foto }); },
+  if (w.step === 'quedaTombamento') return stepSimNao(w, {
+    key: 'quedaTombamento', title: 'Existem cargas ou baias com risco de queda ou tombamento?', next: 'carunchos',
+    onYes: function (data) { w.ocorrencias.push({ tipo: 'Risco de queda/tombamento', descricao: 'Local/baia: ' + data.local + ' — Ações: ' + data.acoes + (data.obs ? ' — Obs: ' + data.obs : ''), foto: data.foto }); },
     fields: function (c) {
-      const local = textField(c, { label: 'Qual local?' });
+      const local = textField(c, { label: 'Qual local/baia?' });
       const acoes = textField(c, { label: 'Quais ações foram realizadas para eliminar o risco?', multiline: true });
+      const obs = textField(c, { label: 'Observação (opcional)', multiline: true });
       const foto = photoField(c, { label: 'Foto da carga/baia', required: true });
-      return { get: function () { return { local: local.getValue(), acoes: acoes.getValue(), foto: foto.getValue() }; }, validate: function () { return !!foto.getValue(); } };
-    }
-  });
-
-  if (w.step === 'tombamento') return stepSimNao(w, {
-    key: 'tombamento', title: 'Existe carga com risco de tombamento?', next: 'carunchos',
-    onYes: function (data) { w.ocorrencias.push({ tipo: 'Risco de tombamento', descricao: 'Baia: ' + data.baia + (data.obs ? ' — ' + data.obs : ''), foto: data.foto }); },
-    fields: function (c) {
-      const baia = textField(c, { label: 'Qual baia?' });
-      const obs = textField(c, { label: 'Observação', multiline: true });
-      const foto = photoField(c, { label: 'Foto' });
-      return { get: function () { return { baia: baia.getValue(), obs: obs.getValue(), foto: foto.getValue() }; }, validate: function () { return true; } };
+      return { get: function () { return { local: local.getValue(), acoes: acoes.getValue(), obs: obs.getValue(), foto: foto.getValue() }; }, validate: function () { return !!foto.getValue(); } };
     }
   });
 
@@ -615,7 +695,7 @@ function stepGoteira(w) {
       }
       w.ocorrencias.push({ tipo: 'Goteira', descricao: parts.join(' | '), foto: foto });
     }
-    w.step = 'queda';
+    w.step = 'quedaTombamento';
     render();
   };
 }
@@ -940,6 +1020,15 @@ function renderPendenciaDetalhe() {
       };
     }
   }
+
+  if (p.STATUS === 'FINALIZADA') {
+    card.appendChild(el('<div class="divider"></div>'));
+    card.appendChild(el('<p><strong>Solução informada</strong><br>' + escapeHtml(p.DESCRICAO_SOLUCAO || '—') + '</p>'));
+    if (p.FOTO_SOLUCAO) card.appendChild(el('<img class="photo-preview" src="' + p.FOTO_SOLUCAO + '">'));
+    card.appendChild(el('<div class="divider"></div>'));
+    card.appendChild(el('<div class="row between"><span class="subtle">Validado por</span><strong>' + escapeHtml(p.ADMIN_VALIDADOR || '—') + '</strong></div>'));
+    card.appendChild(el('<div class="row between"><span class="subtle">Data da validação</span><strong>' + escapeHtml(p.DATA_VALIDACAO || '—') + '</strong></div>'));
+  }
 }
 
 // ------------------------- HISTÓRICO (conferente) -------------------------
@@ -991,6 +1080,7 @@ function renderAdminHome() {
   appendHtml(app,
     screenHeader('Área administrativa', 'Olá, ' + S.usuario.NOME) +
     '<div class="stack">' +
+      menuCard('📅', 'Painel do dia', 'Quais armazéns ainda não fizeram inspeção/limpeza hoje', 'dashInspecoes') +
       menuCard('✅', 'Validação de inspeções', 'Revisar inspeções dos conferentes', 'validacaoInspecoes') +
       menuCard('➕', 'Registrar pendência', 'Abrir uma pendência manualmente', 'registrarPendencia') +
       menuCard('📋', 'Dashboard de pendências', 'Status e distribuição', 'dashPendencias') +
@@ -1184,6 +1274,48 @@ function periodoRange(tipo) {
     return { dataInicial: dateToBR(inicio), dataFinal: dateToBR(hoje) };
   }
   return { dataInicial: '', dataFinal: '' };
+}
+
+async function renderDashInspecoes() {
+  app.appendChild(el(screenHeader('Painel do dia', S.unidade.UNIDADE)));
+  const body = el('<div class="stack" id="body"><p class="subtle">Carregando…</p></div>');
+  app.appendChild(body);
+
+  const d = await api('getDashboardInspecoes', { unidade: S.unidade.UNIDADE }).catch(function () { return null; });
+  body.innerHTML = '';
+  if (!d) return;
+
+  body.appendChild(el('<p class="subtle">Referente a hoje, ' + escapeHtml(d.data) + '</p>'));
+  body.appendChild(el(
+    '<div class="kpi-grid">' +
+      kpi(d.inspecoesFeitas + '/' + d.totalArmazens, 'Inspeções feitas hoje') +
+      kpi(d.checklistsFeitos + '/' + d.totalArmazens, 'Checklists diários feitos') +
+    '</div>'
+  ));
+
+  const listCard = el('<div class="card stack"><h3 class="title-lg">Por armazém</h3></div>');
+  body.appendChild(listCard);
+
+  if (!d.armazens.length) {
+    listCard.appendChild(el('<p class="subtle">Nenhum armazém ativo cadastrado.</p>'));
+  } else {
+    d.armazens.forEach(function (a) {
+      const inspTag = a.inspecaoFeita
+        ? '<span class="tag tag--finalizada">Inspeção ✓ ' + escapeHtml(a.inspecaoHora) + '</span>'
+        : '<span class="tag tag--aberta">Inspeção pendente</span>';
+      const chkTag = a.checklistFeito
+        ? '<span class="tag tag--finalizada">Limpeza ✓</span>'
+        : '<span class="tag tag--aberta">Limpeza pendente</span>';
+      listCard.appendChild(el(
+        '<div class="list-item" style="cursor:default;flex-wrap:wrap;gap:8px">' +
+          '<span><span class="list-item__title">' + escapeHtml(a.armazem) + '</span>' +
+          (a.inspecaoFeita ? '<div class="list-item__sub">Feita por ' + escapeHtml(a.inspecaoUsuario) + '</div>' : '') +
+          '</span>' +
+          '<span class="row" style="gap:6px">' + inspTag + chkTag + '</span>' +
+        '</div>'
+      ));
+    });
+  }
 }
 
 async function renderDashCarunchos() {

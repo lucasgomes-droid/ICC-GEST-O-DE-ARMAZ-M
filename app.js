@@ -95,6 +95,15 @@ function el(html) {
   return div.firstElementChild;
 }
 
+// Insere um HTML que pode ter VÁRIOS elementos irmãos no topo (el() só
+// retornaria o primeiro e descartaria o resto). Usar sempre que a string
+// concatenar mais de uma tag no nível raiz.
+function appendHtml(container, html) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html.trim();
+  while (tmp.firstChild) container.appendChild(tmp.firstChild);
+}
+
 function escapeHtml(str) {
   return String(str == null ? '' : str).replace(/[&<>"']/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -312,11 +321,11 @@ async function renderLoginUnidade() {
 }
 
 async function renderLoginUsuario() {
-  app.appendChild(el(
+  appendHtml(app,
     screenHeader('Login · ' + S.unidade.UNIDADE, 'Quem é você?', 'Selecione seu usuário') +
     '<button class="btn btn--outline btn--sm" id="btnVoltarUnidade" style="align-self:flex-start;margin-top:-6px">← Trocar unidade</button>' +
     '<div class="card stack" id="usuariosList"><p class="subtle">Carregando usuários…</p></div>'
-  ));
+  );
   document.getElementById('btnVoltarUnidade').onclick = function () { go('loginUnidade'); };
   try {
     const usuarios = await api('getUsuarios', { unidade: S.unidade.UNIDADE });
@@ -341,7 +350,7 @@ async function renderLoginUsuario() {
 
 function renderLoginSenha() {
   const u = S.pendingUser;
-  const container = el(
+  appendHtml(app,
     screenHeader('Login Admin · ' + S.unidade.UNIDADE, u.NOME, 'Digite sua senha para acessar a área administrativa') +
     '<div class="card stack">' +
       '<div class="field"><label>Senha</label><input type="password" id="inpSenha" autofocus></div>' +
@@ -349,7 +358,6 @@ function renderLoginSenha() {
       '<button class="btn btn--outline btn--block" id="btnVoltar">← Voltar</button>' +
     '</div>'
   );
-  app.appendChild(container);
   document.getElementById('btnVoltar').onclick = function () { go('loginUsuario'); };
   const btn = document.getElementById('btnEntrar');
   const input = document.getElementById('inpSenha');
@@ -369,7 +377,7 @@ function renderLoginSenha() {
 // ------------------------- CONFERENTE: HOME -------------------------
 
 function renderConferenteHome() {
-  app.appendChild(el(
+  appendHtml(app,
     screenHeader('Área do conferente', 'Olá, ' + S.usuario.NOME) +
     '<div class="stack">' +
       menuCard('🔎', 'Inspeção dos galpões', 'Registrar uma nova inspeção', 'inspecao') +
@@ -377,7 +385,7 @@ function renderConferenteHome() {
       menuCard('📋', 'Minhas pendências', 'Ver e resolver pendências direcionadas a você', 'minhasPendencias') +
       menuCard('🕘', 'Histórico', 'Suas inspeções e checklists anteriores', 'historico') +
     '</div>'
-  ));
+  );
   bindMenuCards();
 }
 
@@ -872,10 +880,10 @@ function renderPendenciasList(wrap, pend, onOpen) {
 function renderPendenciaDetalhe() {
   const p = S.pendenciaAtual;
   const st = OCORRENCIA_STATUS_LABEL[p.STATUS] || { label: p.STATUS, cls: 'aberta' };
-  app.appendChild(el(
+  appendHtml(app,
     screenHeader('Pendência ' + p.ID_PENDENCIA, p.TIPO) +
     '<button class="btn btn--outline btn--sm" id="btnVoltar" style="align-self:flex-start;margin-top:-8px">← Voltar</button>'
-  ));
+  );
   document.getElementById('btnVoltar').onclick = function () { go(S.usuario.TIPO === 'ADMIN' ? 'dashPendencias' : 'minhasPendencias'); };
 
   const card = el('<div class="card stack"></div>');
@@ -981,7 +989,7 @@ async function renderHistorico() {
 // ------------------------- ADMIN: HOME -------------------------
 
 function renderAdminHome() {
-  app.appendChild(el(
+  appendHtml(app,
     screenHeader('Área administrativa', 'Olá, ' + S.usuario.NOME) +
     '<div class="stack">' +
       menuCard('✅', 'Validação de inspeções', 'Revisar inspeções dos conferentes', 'validacaoInspecoes') +
@@ -990,7 +998,7 @@ function renderAdminHome() {
       menuCard('🐞', 'Dashboard de carunchos', 'Capturas por armazém e armadilha', 'dashCarunchos') +
       menuCard('🧹', 'Dashboard de limpeza', 'Checklists realizados e pendentes', 'dashChecklist') +
     '</div>'
-  ));
+  );
   bindMenuCards();
 }
 
@@ -1049,10 +1057,10 @@ function statusInspecaoTag(r) {
 
 async function renderInspecaoDetalheAdmin() {
   const i = S.inspecaoAtual;
-  app.appendChild(el(
+  appendHtml(app,
     screenHeader('Inspeção ' + i.ID_INSPECAO, i.ARMAZEM) +
     '<button class="btn btn--outline btn--sm" id="btnVoltar" style="align-self:flex-start;margin-top:-8px">← Voltar</button>'
-  ));
+  );
   document.getElementById('btnVoltar').onclick = function () { go('validacaoInspecoes'); };
 
   const card = el('<div class="card stack" id="detalhe"><p class="subtle">Carregando…</p></div>');

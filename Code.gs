@@ -41,7 +41,7 @@ const HEADERS = {
   INSPECOES: ['ID_INSPECAO', 'DATA', 'HORA', 'UNIDADE', 'ID_USUARIO', 'USUARIO', 'ARMAZEM', 'RESULTADO', 'OBSERVACAO'],
   OCORRENCIAS_INSPECAO: ['ID_OCORRENCIA_REGISTRO', 'ID_INSPECAO', 'UNIDADE', 'ARMAZEM', 'TIPO', 'DESCRICAO', 'FOTO', 'DATA', 'USUARIO'],
   CAPTURA_CARUNCHOS: ['ID_CAPTURA', 'ID_INSPECAO', 'UNIDADE', 'ARMAZEM', 'ARMADILHA', 'QUANTIDADE', 'PRODUTO_PROXIMO', 'BAIA', 'OBSERVACAO', 'DATA', 'USUARIO'],
-  CHECKLIST_LIMPEZA: ['ID_CHECKLIST', 'DATA', 'HORA', 'UNIDADE', 'USUARIO', 'ARMAZEM', 'PERIODICIDADE', 'ITEM', 'RESULTADO', 'OBSERVACAO', 'FOTO'],
+  CHECKLIST_LIMPEZA: ['ID_CHECKLIST', 'DATA', 'HORA', 'UNIDADE', 'USUARIO', 'ARMAZEM', 'PERIODICIDADE', 'ITEM', 'RESULTADO', 'OBSERVACAO', 'FOTO', 'ID_USUARIO'],
   PENDENCIAS: ['ID_PENDENCIA', 'ID_INSPECAO', 'UNIDADE', 'ARMAZEM', 'RESPONSAVEL', 'ID_RESPONSAVEL', 'CONFERENTE', 'ID_CONFERENTE', 'ADMIN_REGISTROU', 'ORIGEM', 'TIPO', 'DESCRICAO', 'FOTO_ORIGEM', 'DATA_ABERTURA', 'STATUS', 'DATA_RESOLUCAO', 'DESCRICAO_SOLUCAO', 'FOTO_SOLUCAO', 'DATA_VALIDACAO', 'ADMIN_VALIDADOR'],
   _SEQ: ['PREFIXO', 'ULTIMO_NUMERO']
 };
@@ -390,7 +390,8 @@ function criarChecklist_(p) {
       ITEM: item.item,
       RESULTADO: item.resultado,
       OBSERVACAO: item.observacao || '',
-      FOTO: foto
+      FOTO: foto,
+      ID_USUARIO: p.idUsuario || ''
     });
   });
   return { ok: true, data: { idChecklist: idChecklist } };
@@ -468,7 +469,7 @@ function validarPendencia_(p) {
 
 function getHistoricoConferente_(idUsuario) {
   const inspecoes = readSheet_(SHEETS.INSPECOES).filter(function (i) { return String(i.ID_USUARIO) === String(idUsuario); });
-  const checklists = readSheet_(SHEETS.CHECKLISTS).filter(function (c) { return c.USUARIO && String(c.USUARIO) === String(idUsuario); });
+  const checklists = readSheet_(SHEETS.CHECKLISTS).filter(function (c) { return c.ID_USUARIO && String(c.ID_USUARIO) === String(idUsuario); });
   return { inspecoes: inspecoes, checklists: checklists };
 }
 

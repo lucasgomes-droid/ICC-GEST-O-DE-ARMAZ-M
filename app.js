@@ -630,74 +630,73 @@ function stepCarunchos(w) {
   const sub = el('<div class="stack" style="display:none"></div>');
   card.appendChild(sub);
 
-  api('getArmadilhas', { unidade: S.unidade.UNIDADE, armazem: w.armazem }).then(function (armadilhas) {
-    let qtdArmadilhas = null;
-    let entries = [];
+  let entries = [];
 
-    yn.node.addEventListener('change', function () {
-      const val = yn.getValue();
-      sub.style.display = val ? 'flex' : 'none';
-      sub.innerHTML = '';
-      if (!val) return;
-      const qtd = textField(sub, { label: 'Quantas armadilhas tiveram captura?', type: 'number' });
-      const btnGerar = el('<button type="button" class="btn btn--outline btn--sm" style="align-self:flex-start">Gerar formulários</button>');
-      sub.appendChild(btnGerar);
-      const listWrap = el('<div class="stack"></div>');
-      sub.appendChild(listWrap);
+  yn.node.addEventListener('change', function () {
+    const val = yn.getValue();
+    sub.style.display = val ? 'flex' : 'none';
+    sub.innerHTML = '';
+    if (!val) return;
+    const qtd = textField(sub, { label: 'Quantas armadilhas tiveram captura?', type: 'number' });
+    const btnGerar = el('<button type="button" class="btn btn--outline btn--sm" style="align-self:flex-start">Gerar formulários</button>');
+    sub.appendChild(btnGerar);
+    const listWrap = el('<div class="stack"></div>');
+    sub.appendChild(listWrap);
 
-      btnGerar.onclick = function () {
-        const n = parseInt(qtd.getValue(), 10);
-        if (!n || n < 1) { toast('Informe um número válido', true); return; }
-        listWrap.innerHTML = '';
-        entries = [];
-        for (let i = 0; i < n; i++) {
-          const box = el('<div class="card" style="padding:14px;background:#fafbfa"><h3 class="title-lg" style="margin-bottom:8px">Armadilha ' + (i + 1) + '</h3></div>');
-          listWrap.appendChild(box);
-          const armadilhaSel = selectField(box, { label: 'Armadilha', options: armadilhas.map(function (a) { return { value: a.ARMADILHA, label: a.ARMADILHA + (a.LOCAL ? ' — ' + a.LOCAL : '') }; }) });
-          const qtdCaruncho = textField(box, { label: 'Quantidade de carunchos', type: 'number' });
-          const produtoProximo = yesNoField(box, 'Existe produto próximo com possibilidade de infestação?');
-          const detalhe = el('<div class="stack" style="display:none"></div>');
-          box.appendChild(detalhe);
-          let baiaF, produtoF, obsF;
-          produtoProximo.node.addEventListener('change', function () {
-            const v = produtoProximo.getValue();
-            detalhe.style.display = v ? 'flex' : 'none';
-            detalhe.innerHTML = '';
-            if (!v) return;
-            baiaF = textField(detalhe, { label: 'Baia' });
-            produtoF = textField(detalhe, { label: 'Produto' });
-            obsF = textField(detalhe, { label: 'Observação', multiline: true });
-          });
-          entries.push({
-            armadilha: armadilhaSel, quantidade: qtdCaruncho, produtoProximo: produtoProximo,
-            getExtra: function () { return { baia: baiaF ? baiaF.getValue() : '', produto: produtoF ? produtoF.getValue() : '', observacao: obsF ? obsF.getValue() : '' }; }
-          });
-        }
-      };
-    });
-
-    const btn = el('<button class="btn btn--primary btn--block" style="margin-top:6px">Continuar</button>');
-    card.appendChild(btn);
-    btn.onclick = function () {
-      const val = yn.getValue();
-      if (val === null) { toast('Selecione Sim ou Não', true); return; }
-      if (val) {
-        if (!entries.length) { toast('Gere e preencha os formulários das armadilhas', true); return; }
-        entries.forEach(function (e) {
-          if (!e.armadilha.getValue()) { toast('Selecione a armadilha em todos os formulários', true); throw new Error('validation'); }
-          const extra = e.getExtra();
-          w.capturas.push({
-            armadilha: e.armadilha.getValue(),
-            quantidade: e.quantidade.getValue() || 0,
-            produtoProximo: !!e.produtoProximo.getValue(),
-            baia: extra.baia, observacao: (extra.produto ? 'Produto: ' + extra.produto + '. ' : '') + extra.observacao
-          });
+    btnGerar.onclick = function () {
+      const n = parseInt(qtd.getValue(), 10);
+      if (!n || n < 1) { toast('Informe um número válido', true); return; }
+      listWrap.innerHTML = '';
+      entries = [];
+      for (let i = 0; i < n; i++) {
+        const box = el('<div class="card" style="padding:14px;background:#fafbfa"><h3 class="title-lg" style="margin-bottom:8px">Armadilha ' + (i + 1) + '</h3></div>');
+        listWrap.appendChild(box);
+        const armadilhaNum = textField(box, { label: 'Número/identificação da armadilha *', placeholder: 'Ex: 12' });
+        const qtdCaruncho = textField(box, { label: 'Quantidade de carunchos', type: 'number' });
+        const produtoProximo = yesNoField(box, 'Existe produto próximo com possibilidade de infestação?');
+        const detalhe = el('<div class="stack" style="display:none"></div>');
+        box.appendChild(detalhe);
+        let baiaF, produtoF, obsF;
+        produtoProximo.node.addEventListener('change', function () {
+          const v = produtoProximo.getValue();
+          detalhe.style.display = v ? 'flex' : 'none';
+          detalhe.innerHTML = '';
+          if (!v) return;
+          baiaF = textField(detalhe, { label: 'Baia' });
+          produtoF = textField(detalhe, { label: 'Produto' });
+          obsF = textField(detalhe, { label: 'Observação', multiline: true });
+        });
+        entries.push({
+          armadilha: armadilhaNum, quantidade: qtdCaruncho, produtoProximo: produtoProximo,
+          getExtra: function () { return { baia: baiaF ? baiaF.getValue() : '', produto: produtoF ? produtoF.getValue() : '', observacao: obsF ? obsF.getValue() : '' }; }
         });
       }
-      w.step = 'revisao';
-      render();
     };
-  }).catch(function () {});
+  });
+
+  const btn = el('<button class="btn btn--primary btn--block" style="margin-top:6px">Continuar</button>');
+  card.appendChild(btn);
+  btn.onclick = function () {
+    const val = yn.getValue();
+    if (val === null) { toast('Selecione Sim ou Não', true); return; }
+    if (val) {
+      if (!entries.length) { toast('Gere e preencha os formulários das armadilhas', true); return; }
+      for (const e of entries) {
+        if (!e.armadilha.getValue()) { toast('Informe o número da armadilha em todos os formulários', true); return; }
+      }
+      entries.forEach(function (e) {
+        const extra = e.getExtra();
+        w.capturas.push({
+          armadilha: e.armadilha.getValue(),
+          quantidade: e.quantidade.getValue() || 0,
+          produtoProximo: !!e.produtoProximo.getValue(),
+          baia: extra.baia, observacao: (extra.produto ? 'Produto: ' + extra.produto + '. ' : '') + extra.observacao
+        });
+      });
+    }
+    w.step = 'revisao';
+    render();
+  };
 }
 
 function stepRevisao(w) {
@@ -822,7 +821,7 @@ function renderChecklist() {
       }
       btn.disabled = true; btn.textContent = 'Enviando…';
       try {
-        await api('createChecklist', { unidade: S.unidade.UNIDADE, usuario: S.usuario.NOME, armazem: w.armazem, periodicidade: w.periodicidade, itens: payloadItens });
+        await api('createChecklist', { unidade: S.unidade.UNIDADE, usuario: S.usuario.NOME, idUsuario: S.usuario.ID_USUARIO, armazem: w.armazem, periodicidade: w.periodicidade, itens: payloadItens });
         toast('Checklist enviado com sucesso!', false, true);
         S.wizard = null;
         go('conferenteHome');
@@ -1167,23 +1166,96 @@ async function renderRegistrarPendencia() {
 
 // ------------------------- DASHBOARDS -------------------------
 
+function dateToBR(d) {
+  const pad = function (n) { return String(n).padStart(2, '0'); };
+  return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear();
+}
+
+function periodoRange(tipo) {
+  const hoje = new Date();
+  if (tipo === 'semana') {
+    const inicio = new Date(hoje);
+    const diaSemana = (inicio.getDay() + 6) % 7; // segunda = 0
+    inicio.setDate(inicio.getDate() - diaSemana);
+    return { dataInicial: dateToBR(inicio), dataFinal: dateToBR(hoje) };
+  }
+  if (tipo === 'mes') {
+    const inicio = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
+    return { dataInicial: dateToBR(inicio), dataFinal: dateToBR(hoje) };
+  }
+  return { dataInicial: '', dataFinal: '' };
+}
+
 async function renderDashCarunchos() {
   app.appendChild(el(screenHeader('Dashboard de carunchos', S.unidade.UNIDADE)));
-  const body = el('<div class="stack" id="body"><p class="subtle">Carregando…</p></div>');
-  app.appendChild(body);
-  const d = await api('getDashboardCarunchos', { unidade: S.unidade.UNIDADE }).catch(function () { return null; });
-  body.innerHTML = '';
-  if (!d) return;
-  body.appendChild(el(
-    '<div class="kpi-grid">' +
-      kpi(d.totalCapturas, 'Total capturado') +
-      kpi(d.armadilhasComCaptura, 'Armadilhas c/ captura') +
-      kpi(d.mediaCaptura, 'Média por registro') +
-      kpi(d.registros.length, 'Registros') +
+
+  const filterWrap = el(
+    '<div class="filters">' +
+      '<select id="fPeriodo">' +
+        '<option value="tudo">Todo o período</option>' +
+        '<option value="semana">Esta semana</option>' +
+        '<option value="mes">Este mês</option>' +
+        '<option value="custom">Período personalizado</option>' +
+      '</select>' +
+      '<select id="fArmazem"><option value="">Todos os armazéns</option></select>' +
     '</div>'
-  ));
-  body.appendChild(barCard('Capturas por armazém', d.porArmazem));
-  body.appendChild(barCard('Capturas por armadilha', d.porArmadilha));
+  );
+  app.appendChild(filterWrap);
+
+  const customWrap = el(
+    '<div class="filters" id="customDates" style="display:none">' +
+      '<input type="date" id="fDataInicial">' +
+      '<input type="date" id="fDataFinal">' +
+      '<button class="btn btn--outline btn--sm" id="btnAplicar">Aplicar</button>' +
+    '</div>'
+  );
+  app.appendChild(customWrap);
+
+  const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
+  app.appendChild(body);
+
+  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const selArmazem = document.getElementById('fArmazem');
+  armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
+
+  const selPeriodo = document.getElementById('fPeriodo');
+  const customDates = document.getElementById('customDates');
+  selPeriodo.onchange = function () {
+    customDates.style.display = selPeriodo.value === 'custom' ? 'flex' : 'none';
+    if (selPeriodo.value !== 'custom') load();
+  };
+  document.getElementById('btnAplicar').onclick = load;
+  selArmazem.onchange = load;
+
+  async function load() {
+    body.innerHTML = '<p class="subtle">Carregando…</p>';
+    let range = { dataInicial: '', dataFinal: '' };
+    if (selPeriodo.value === 'custom') {
+      const ini = document.getElementById('fDataInicial').value; // yyyy-mm-dd
+      const fim = document.getElementById('fDataFinal').value;
+      if (ini) range.dataInicial = dateToBR(new Date(ini + 'T00:00:00'));
+      if (fim) range.dataFinal = dateToBR(new Date(fim + 'T00:00:00'));
+    } else {
+      range = periodoRange(selPeriodo.value);
+    }
+    const d = await api('getDashboardCarunchos', {
+      unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
+      dataInicial: range.dataInicial, dataFinal: range.dataFinal
+    }).catch(function () { return null; });
+    body.innerHTML = '';
+    if (!d) return;
+    body.appendChild(el(
+      '<div class="kpi-grid">' +
+        kpi(d.totalCapturas, 'Total capturado') +
+        kpi(d.armadilhasComCaptura, 'Armadilhas c/ captura') +
+        kpi(d.mediaCaptura, 'Média por registro') +
+        kpi(d.registros.length, 'Registros') +
+      '</div>'
+    ));
+    body.appendChild(barCard('Capturas por armazém', d.porArmazem));
+    body.appendChild(barCard('Capturas por armadilha', d.porArmadilha));
+  }
+  load();
 }
 
 async function renderDashChecklist() {

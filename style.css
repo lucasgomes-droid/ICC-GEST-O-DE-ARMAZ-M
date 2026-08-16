@@ -12,11 +12,11 @@
   --paper:#f4f5f3;
   --card:#ffffff;
   --line:#dfe3e1;
-  --brand:#0f4c81;
-  --brand-dark:#0a3a63;
-  --accent:#e8a33d;
-  --accent-ink:#3a2a06;
-  --st-aberta:#e8a33d;
+  --brand:#5e9030;
+  --brand-dark:#436722;
+  --accent:#df8630;
+  --accent-ink:#3a2506;
+  --st-aberta:#df8630;
   --st-tratamento:#3b82c4;
   --st-validacao:#8b5cf6;
   --st-finalizada:#2f9e64;
@@ -34,8 +34,8 @@ body{
   font-family:var(--font);
   background:var(--paper);
   background-image:
-    linear-gradient(90deg, rgba(15,76,129,.035) 1px, transparent 1px),
-    linear-gradient(rgba(15,76,129,.035) 1px, transparent 1px);
+    linear-gradient(90deg, rgba(94,144,48,.035) 1px, transparent 1px),
+    linear-gradient(rgba(94,144,48,.035) 1px, transparent 1px);
   background-size:28px 28px;
   color:var(--ink);
   min-height:100vh;
@@ -55,9 +55,8 @@ input,select,textarea{font-family:inherit;font-size:16px}
 }
 .topbar__brand{display:flex;align-items:center;gap:10px}
 .topbar__mark{
-  font-family:var(--mono);font-weight:600;font-size:13px;
-  background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.35);
-  border-radius:6px;padding:4px 7px;letter-spacing:.04em;
+  width:34px;height:34px;object-fit:contain;
+  background:#fff;border-radius:7px;padding:3px;
 }
 .topbar__meta{display:flex;flex-direction:column;line-height:1.2}
 .topbar__meta strong{font-size:14px}
@@ -136,7 +135,7 @@ input,select,textarea{font-family:inherit;font-size:16px}
   padding:16px 10px;border-radius:var(--radius);border:1.5px solid var(--line);
   background:#fff;font-weight:600;font-size:15px;cursor:pointer;text-align:center;
 }
-.option-btn.is-selected{border-color:var(--brand);background:#eaf2f8;color:var(--brand-dark)}
+.option-btn.is-selected{border-color:var(--brand);background:#eef5e7;color:var(--brand-dark)}
 .option-btn.danger.is-selected{border-color:var(--st-risco);background:#fdeceb;color:var(--st-risco)}
 
 .list-item{
@@ -220,9 +219,7 @@ input,select,textarea{font-family:inherit;font-size:16px}
   display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:6px;
 }
 .login-logo .mark{
-  width:44px;height:44px;border-radius:10px;background:var(--brand);color:#fff;
-  display:flex;align-items:center;justify-content:center;font-family:var(--mono);
-  font-weight:700;font-size:15px;
+  width:88px;height:88px;object-fit:contain;
 }
 
 .spinner{

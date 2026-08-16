@@ -394,7 +394,7 @@ function updateChrome() {
 async function renderLoginUnidade() {
   app.appendChild(el(
     '<div class="screen" style="padding-top:10vh">' +
-      '<div class="login-logo"><div class="mark">GA</div></div>' +
+      '<div class="login-logo"><img src="logo.png" alt="ICC Brazil" class="mark"></div>' +
       '<h1 class="title-xl" style="text-align:center">Gestão de Armazéns</h1>' +
       '<p class="subtle" style="text-align:center;margin-bottom:8px">Selecione sua unidade para continuar</p>' +
       '<div class="card stack" id="unidadesList"><p class="subtle">Carregando unidades…</p></div>' +

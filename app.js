@@ -1778,8 +1778,49 @@ async function renderDashCarunchos() {
     ));
     body.appendChild(barCard('Capturas por armazém', d.porArmazem));
     body.appendChild(barCard('Capturas por armadilha', d.porArmadilha));
+    body.appendChild(evolucaoCard('Evolução das capturas por data', d.registros));
+
+    if (d.registros.length) {
+      const listCard = el('<div class="card stack"><h3 class="title-lg">Capturas recentes</h3></div>');
+      body.appendChild(listCard);
+      const tableWrap = el('<div style="overflow-x:auto"></div>');
+      listCard.appendChild(tableWrap);
+      const recentes = d.registros.slice().sort(function (a, b) {
+        const da = parseBR(a.DATA), db = parseBR(b.DATA);
+        return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
+      }).slice(0, 15);
+      tableWrap.appendChild(buildPreviewTable(
+        [['DATA', 'Data'], ['ARMAZEM', 'Armazém'], ['ARMADILHA', 'Armadilha'], ['QUANTIDADE', 'Qtd'], ['USUARIO', 'Conferente']],
+        recentes
+      ));
+    }
   }
   load();
+}
+
+// Agrupa registros de captura por data (soma a quantidade) e mostra em
+// ordem cronológica (não por tamanho, como o barCard normal faz).
+function evolucaoCard(titulo, registros) {
+  const acc = {};
+  registros.forEach(function (r) {
+    const k = r.DATA || 'N/A';
+    acc[k] = (acc[k] || 0) + Number(r.QUANTIDADE || 0);
+  });
+  const chaves = Object.keys(acc).sort(function (a, b) {
+    const da = parseBR(a), db = parseBR(b);
+    return (da ? da.getTime() : 0) - (db ? db.getTime() : 0);
+  });
+  const max = chaves.length ? Math.max.apply(null, chaves.map(function (k) { return acc[k]; })) : 1;
+  const card = el('<div class="card stack"><h3 class="title-lg">' + escapeHtml(titulo) + '</h3></div>');
+  if (!chaves.length) { card.appendChild(el('<p class="subtle">Sem dados no período.</p>')); return card; }
+  chaves.forEach(function (k) {
+    card.appendChild(el(
+      '<div class="bar-row"><span class="label">' + escapeHtml(k) + '</span>' +
+      '<div class="bar-track"><div class="bar-fill" style="width:' + Math.max(4, (acc[k] / max) * 100) + '%"></div></div>' +
+      '<span class="bar-val">' + escapeHtml(acc[k]) + '</span></div>'
+    ));
+  });
+  return card;
 }
 
 async function renderDashChecklist() {

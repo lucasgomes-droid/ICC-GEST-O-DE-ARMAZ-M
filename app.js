@@ -1768,6 +1768,19 @@ async function renderDashCarunchos() {
     }).catch(function () { return null; });
     body.innerHTML = '';
     if (!d) return;
+
+    let comparativoHtml = '';
+    if (selPeriodo.value !== 'tudo') {
+      const rangeAnterior = periodoAnteriorRange(range);
+      if (rangeAnterior) {
+        const dAnterior = await api('getDashboardCarunchos', {
+          unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
+          dataInicial: rangeAnterior.dataInicial, dataFinal: rangeAnterior.dataFinal
+        }).catch(function () { return null; });
+        if (dAnterior) comparativoHtml = comparativoBadge(d.totalCapturas, dAnterior.totalCapturas, true);
+      }
+    }
+
     body.appendChild(el(
       '<div class="kpi-grid">' +
         kpi(d.totalCapturas, 'Total capturado') +
@@ -1776,9 +1789,22 @@ async function renderDashCarunchos() {
         kpi(d.registros.length, 'Registros') +
       '</div>'
     ));
+    if (comparativoHtml) body.appendChild(el('<div style="margin-top:-4px">' + comparativoHtml + '</div>'));
+
+    const alertas = calcularAlertasArmadilha(d.porArmadilha);
+    if (alertas.length) {
+      const mediaG = Object.values(d.porArmadilha).reduce(function (a, b) { return a + b; }, 0) / Object.values(d.porArmadilha).length;
+      body.appendChild(el(
+        '<div class="card stack" style="border-color:var(--st-risco);background:#fdeceb">' +
+          '<strong style="color:var(--st-risco)">⚠️ Possível foco de infestação</strong>' +
+          alertas.map(function (a) { return '<p class="subtle" style="color:var(--st-risco);margin:0">Armadilha ' + escapeHtml(a) + ': ' + d.porArmadilha[a] + ' capturas (média geral: ' + mediaG.toFixed(1) + ')</p>'; }).join('') +
+        '</div>'
+      ));
+    }
+
     body.appendChild(barCard('Capturas por armazém', d.porArmazem));
     body.appendChild(barCard('Capturas por armadilha', d.porArmadilha));
-    body.appendChild(evolucaoCard('Evolução das capturas por data', d.registros));
+    body.appendChild(evolucaoCard('Evolução das capturas por data', d.registros, function (r) { return r.DATA; }, function (r) { return r.QUANTIDADE; }));
 
     if (d.registros.length) {
       const listCard = el('<div class="card stack"><h3 class="title-lg">Capturas recentes</h3></div>');
@@ -1800,11 +1826,13 @@ async function renderDashCarunchos() {
 
 // Agrupa registros de captura por data (soma a quantidade) e mostra em
 // ordem cronológica (não por tamanho, como o barCard normal faz).
-function evolucaoCard(titulo, registros) {
+function evolucaoCard(titulo, registros, getDataStr, getValor) {
+  getDataStr = getDataStr || function (r) { return r.DATA; };
+  getValor = getValor || function () { return 1; };
   const acc = {};
   registros.forEach(function (r) {
-    const k = r.DATA || 'N/A';
-    acc[k] = (acc[k] || 0) + Number(r.QUANTIDADE || 0);
+    const k = getDataStr(r) || 'N/A';
+    acc[k] = (acc[k] || 0) + Number(getValor(r) || 0);
   });
   const chaves = Object.keys(acc).sort(function (a, b) {
     const da = parseBR(a), db = parseBR(b);
@@ -1823,19 +1851,138 @@ function evolucaoCard(titulo, registros) {
   return card;
 }
 
+// Calcula o período imediatamente anterior, com a mesma duração do período
+// selecionado — usado para comparar "esta semana" com "a semana passada" etc.
+function periodoAnteriorRange(range) {
+  const inicio = parseBR(range.dataInicial);
+  const fim = parseBR(range.dataFinal);
+  if (!inicio || !fim) return null;
+  const duracaoMs = fim.getTime() - inicio.getTime();
+  const novoFim = new Date(inicio.getTime() - 24 * 60 * 60 * 1000);
+  const novoInicio = new Date(novoFim.getTime() - duracaoMs);
+  return { dataInicial: dateToBR(novoInicio), dataFinal: dateToBR(novoFim) };
+}
+
+// Monta o texto "▲ 20% vs período anterior", com verde/vermelho de acordo
+// com o que é "bom" para aquela métrica (ex: menos pendências = bom).
+function comparativoBadge(atual, anterior, menorEhMelhor) {
+  if (anterior === null || anterior === undefined) return '';
+  const diff = atual - anterior;
+  if (diff === 0) return '<span class="subtle" style="font-size:12.5px">Igual ao período anterior (' + anterior + ')</span>';
+  const subiu = diff > 0;
+  const bom = menorEhMelhor ? !subiu : subiu;
+  const cor = bom ? 'var(--st-finalizada)' : 'var(--st-risco)';
+  const seta = subiu ? '▲' : '▼';
+  const pct = anterior > 0 ? Math.round(Math.abs(diff) / anterior * 100) + '%' : String(Math.abs(diff));
+  return '<span style="font-weight:700;color:' + cor + '">' + seta + ' ' + pct + '</span> <span class="subtle" style="font-size:12.5px">vs período anterior (' + anterior + ')</span>';
+}
+
+// Aponta armadilhas que capturaram bem mais que a média das demais —
+// possível indício de foco de infestação concentrado num ponto.
+function calcularAlertasArmadilha(porArmadilha) {
+  const valores = Object.values(porArmadilha);
+  if (valores.length < 2) return [];
+  const media = valores.reduce(function (a, b) { return a + b; }, 0) / valores.length;
+  if (media <= 0) return [];
+  return Object.keys(porArmadilha).filter(function (k) { return porArmadilha[k] >= Math.max(media * 2, media + 3); });
+}
+
 async function renderDashChecklist() {
   app.appendChild(el(screenHeader('Dashboard de limpeza', S.unidade.UNIDADE)));
-  const body = el('<div class="stack" id="body"><p class="subtle">Carregando…</p></div>');
+
+  const filterWrap = el(
+    '<div class="filters">' +
+      '<select id="fPeriodo">' +
+        '<option value="tudo">Todo o período</option>' +
+        '<option value="semana">Esta semana</option>' +
+        '<option value="mes">Este mês</option>' +
+        '<option value="custom">Período personalizado</option>' +
+      '</select>' +
+      '<select id="fArmazem"><option value="">Todos os armazéns</option></select>' +
+    '</div>'
+  );
+  app.appendChild(filterWrap);
+  const customWrap = el(
+    '<div class="filters" id="customDates" style="display:none">' +
+      '<input type="date" id="fDataInicial">' +
+      '<input type="date" id="fDataFinal">' +
+      '<button class="btn btn--outline btn--sm" id="btnAplicar">Aplicar</button>' +
+    '</div>'
+  );
+  app.appendChild(customWrap);
+
+  const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
   app.appendChild(body);
-  const d = await api('getDashboardChecklist', { unidade: S.unidade.UNIDADE }).catch(function () { return null; });
-  body.innerHTML = '';
-  if (!d) return;
-  body.appendChild(el(
-    '<div class="kpi-grid">' + kpi(d.total, 'Itens registrados') + kpi(d.naoConformidades, 'Não conformidades') + '</div>'
-  ));
-  body.appendChild(barCard('Por conferente', d.porConferente));
-  body.appendChild(barCard('Por armazém', d.porArmazem));
-  body.appendChild(barCard('Por periodicidade', d.porPeriodicidade));
+
+  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const selArmazem = document.getElementById('fArmazem');
+  armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
+
+  const selPeriodo = document.getElementById('fPeriodo');
+  const customDates = document.getElementById('customDates');
+  selPeriodo.onchange = function () {
+    customDates.style.display = selPeriodo.value === 'custom' ? 'flex' : 'none';
+    if (selPeriodo.value !== 'custom') load();
+  };
+  document.getElementById('btnAplicar').onclick = load;
+  selArmazem.onchange = load;
+
+  async function load() {
+    body.innerHTML = '<p class="subtle">Carregando…</p>';
+    let range = { dataInicial: '', dataFinal: '' };
+    if (selPeriodo.value === 'custom') {
+      const ini = document.getElementById('fDataInicial').value;
+      const fim = document.getElementById('fDataFinal').value;
+      if (ini) range.dataInicial = dateToBR(new Date(ini + 'T00:00:00'));
+      if (fim) range.dataFinal = dateToBR(new Date(fim + 'T00:00:00'));
+    } else {
+      range = periodoRange(selPeriodo.value);
+    }
+    const d = await api('getDashboardChecklist', {
+      unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
+      dataInicial: range.dataInicial, dataFinal: range.dataFinal
+    }).catch(function () { return null; });
+    body.innerHTML = '';
+    if (!d) return;
+
+    let comparativoHtml = '';
+    if (selPeriodo.value !== 'tudo') {
+      const rangeAnterior = periodoAnteriorRange(range);
+      if (rangeAnterior) {
+        const dAnterior = await api('getDashboardChecklist', {
+          unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
+          dataInicial: rangeAnterior.dataInicial, dataFinal: rangeAnterior.dataFinal
+        }).catch(function () { return null; });
+        if (dAnterior) comparativoHtml = comparativoBadge(d.naoConformidades, dAnterior.naoConformidades, true);
+      }
+    }
+
+    body.appendChild(el(
+      '<div class="kpi-grid">' + kpi(d.total, 'Itens registrados') + kpi(d.naoConformidades, 'Não conformidades') + '</div>'
+    ));
+    if (comparativoHtml) body.appendChild(el('<div style="margin-top:-4px">' + comparativoHtml + ' <span class="subtle" style="font-size:12.5px">em não conformidades</span></div>'));
+
+    body.appendChild(barCard('Por conferente', d.porConferente));
+    body.appendChild(barCard('Por armazém', d.porArmazem));
+    body.appendChild(barCard('Por periodicidade', d.porPeriodicidade));
+    body.appendChild(evolucaoCard('Evolução dos checklists por data', d.registros));
+
+    if (d.registros.length) {
+      const listCard = el('<div class="card stack"><h3 class="title-lg">Checklists recentes</h3></div>');
+      body.appendChild(listCard);
+      const tableWrap = el('<div style="overflow-x:auto"></div>');
+      listCard.appendChild(tableWrap);
+      const recentes = d.registros.slice().sort(function (a, b) {
+        const da = parseBR(a.DATA), db = parseBR(b.DATA);
+        return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
+      }).slice(0, 15);
+      tableWrap.appendChild(buildPreviewTable(
+        [['DATA', 'Data'], ['ARMAZEM', 'Armazém'], ['PERIODICIDADE', 'Periodicidade'], ['ITEM', 'Item'], ['RESULTADO', 'Resultado'], ['USUARIO', 'Conferente']],
+        recentes
+      ));
+    }
+  }
+  load();
 }
 
 async function renderDashPendencias() {
@@ -1896,14 +2043,30 @@ async function renderDashPendencias() {
     }).catch(function () { return null; });
     body.innerHTML = '';
     if (!d) return;
+
+    let comparativoHtml = '';
+    if (selPeriodo.value !== 'tudo') {
+      const rangeAnterior = periodoAnteriorRange(range);
+      if (rangeAnterior) {
+        const dAnterior = await api('getDashboardPendencias', {
+          unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
+          dataInicial: rangeAnterior.dataInicial, dataFinal: rangeAnterior.dataFinal
+        }).catch(function () { return null; });
+        if (dAnterior) comparativoHtml = comparativoBadge(d.total, dAnterior.total, true);
+      }
+    }
+
     body.appendChild(el(
       '<div class="kpi-grid">' +
         kpi(d.abertas, 'Abertas') + kpi(d.emTratamento, 'Em tratamento') +
         kpi(d.aguardandoValidacao, 'Aguard. validação') + kpi(d.finalizadas, 'Finalizadas') +
       '</div>'
     ));
+    if (comparativoHtml) body.appendChild(el('<div style="margin-top:-4px">' + comparativoHtml + ' <span class="subtle" style="font-size:12.5px">em pendências abertas no período</span></div>'));
+
     body.appendChild(barCard('Por armazém', d.porArmazem));
     body.appendChild(barCard('Por ocorrência', d.porOcorrencia));
+    body.appendChild(evolucaoCard('Evolução das pendências por data', d.registros, function (r) { return String(r.DATA_ABERTURA || '').split(' ')[0]; }));
 
     const listCard = el('<div class="card stack"><h3 class="title-lg">Pendências recentes</h3></div>');
     body.appendChild(listCard);

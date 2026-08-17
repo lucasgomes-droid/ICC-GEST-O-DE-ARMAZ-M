@@ -28,6 +28,8 @@
   --mono:'IBM Plex Mono', ui-monospace, monospace;
 }
 
+[hidden]{display:none !important}
+
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
 body{

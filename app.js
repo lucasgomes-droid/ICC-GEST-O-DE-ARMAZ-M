@@ -417,6 +417,14 @@ async function renderLoginUnidade() {
 // Para Gerente/Coordenador (UNIDADE = TODAS): troca a unidade de trabalho
 // sem precisar sair e logar de novo.
 async function renderTrocarUnidadeGlobal() {
+  // Trava de segurança: mesmo que alguém force a navegação até aqui
+  // (ex: pelo console do navegador), sem acesso TODAS não passa daqui.
+  if (String(S.usuario.UNIDADE).toUpperCase() !== 'TODAS') {
+    toast('Você não tem permissão para trocar de unidade.', true);
+    go(S.usuario.TIPO === 'ADMIN' ? 'adminHome' : 'conferenteHome');
+    return;
+  }
+
   app.appendChild(el(
     screenHeader('Trocar unidade', 'Unidade atual: ' + S.unidade.UNIDADE, 'Você tem acesso a todas as unidades')
   ));

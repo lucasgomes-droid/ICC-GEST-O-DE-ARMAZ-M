@@ -343,6 +343,7 @@ function render() {
     registrarPendencia: renderRegistrarPendencia,
     dashCarunchos: renderDashCarunchos,
     dashInspecoes: renderDashInspecoes,
+    dashOcorrencias: renderDashOcorrencias,
     relatorios: renderRelatorios,
     relatorioDetalhe: renderRelatorioDetalhe,
     dashChecklist: renderDashChecklist,
@@ -534,19 +535,7 @@ function renderInspecao() {
   const w = S.wizard;
 
   if (w.step === 'armazem') return stepArmazem(w, function () { w.step = 'avaria'; render(); });
-  if (w.step === 'avaria') return stepSimNao(w, {
-    key: 'avaria', title: 'Produto avariado?', next: 'goteira',
-    onYes: function (data) {
-      w.ocorrencias.push({ tipo: 'Produto avariado', descricao: 'Local: ' + data.rua + ' / Baia: ' + data.baia + (data.obs ? ' — ' + data.obs : ''), foto: data.foto });
-    },
-    fields: function (c) {
-      const rua = textField(c, { label: 'Qual rua?' });
-      const baia = textField(c, { label: 'Qual baia?' });
-      const obs = textField(c, { label: 'Observação', multiline: true });
-      const foto = photoField(c, { label: 'Foto do produto avariado', required: true });
-      return { get: function () { return { rua: rua.getValue(), baia: baia.getValue(), obs: obs.getValue(), foto: foto.getValue() }; }, validate: function () { return !!foto.getValue(); } };
-    }
-  });
+  if (w.step === 'avaria') return stepAvaria(w);
 
   if (w.step === 'goteira') return stepGoteira(w);
   if (w.step === 'quedaTombamento') return stepSimNao(w, {
@@ -723,6 +712,72 @@ function stepGoteira(w) {
       w.ocorrencias.push({ tipo: 'Goteira', descricao: parts.join(' | '), foto: foto });
     }
     w.step = 'quedaTombamento';
+    render();
+  };
+}
+
+// Igual ao padrão dos carunchos: pergunta quantas avarias foram
+// encontradas e gera um mini-formulário para cada uma (cada avaria conta
+// como 1 registro no dashboard — "Total de avarias" soma esses registros).
+function stepAvaria(w) {
+  const container = el(wizardHeader('Produto avariado?'));
+  app.appendChild(container);
+  const card = el('<div class="card stack"></div>');
+  app.appendChild(card);
+
+  const yn = yesNoField(card, 'Produto avariado?');
+  const sub = el('<div class="stack" style="display:none"></div>');
+  card.appendChild(sub);
+
+  let entries = [];
+
+  yn.node.addEventListener('change', function () {
+    const val = yn.getValue();
+    sub.style.display = val ? 'flex' : 'none';
+    sub.innerHTML = '';
+    if (!val) return;
+    const qtd = textField(sub, { label: 'Quantas avarias foram encontradas?', type: 'number' });
+    const btnGerar = el('<button type="button" class="btn btn--outline btn--sm" style="align-self:flex-start">Gerar formulários</button>');
+    sub.appendChild(btnGerar);
+    const listWrap = el('<div class="stack"></div>');
+    sub.appendChild(listWrap);
+
+    btnGerar.onclick = function () {
+      const n = parseInt(qtd.getValue(), 10);
+      if (!n || n < 1) { toast('Informe um número válido', true); return; }
+      listWrap.innerHTML = '';
+      entries = [];
+      for (let i = 0; i < n; i++) {
+        const box = el('<div class="card" style="padding:14px;background:#fafbfa"><h3 class="title-lg" style="margin-bottom:8px">Avaria ' + (i + 1) + '</h3></div>');
+        listWrap.appendChild(box);
+        const rua = textField(box, { label: 'Qual rua?' });
+        const baia = textField(box, { label: 'Qual baia?' });
+        const obs = textField(box, { label: 'Observação', multiline: true });
+        const foto = photoField(box, { label: 'Foto do produto avariado', required: true });
+        entries.push({ rua: rua, baia: baia, obs: obs, foto: foto });
+      }
+    };
+  });
+
+  const btn = el('<button class="btn btn--primary btn--block" style="margin-top:6px">Continuar</button>');
+  card.appendChild(btn);
+  btn.onclick = function () {
+    const val = yn.getValue();
+    if (val === null) { toast('Selecione Sim ou Não', true); return; }
+    if (val) {
+      if (!entries.length) { toast('Gere e preencha os formulários das avarias', true); return; }
+      for (const e of entries) {
+        if (!e.foto.getValue()) { toast('A foto é obrigatória em todas as avarias', true); return; }
+      }
+      entries.forEach(function (e) {
+        w.ocorrencias.push({
+          tipo: 'Produto avariado',
+          descricao: 'Local: ' + e.rua.getValue() + ' / Baia: ' + e.baia.getValue() + (e.obs.getValue() ? ' — ' + e.obs.getValue() : ''),
+          foto: e.foto.getValue()
+        });
+      });
+    }
+    w.step = 'goteira';
     render();
   };
 }
@@ -1264,6 +1319,7 @@ function renderAdminHome() {
       menuCard('➕', 'Registrar pendência', 'Abrir uma pendência manualmente', 'registrarPendencia') +
       menuCard('📋', 'Dashboard de pendências', 'Status e distribuição', 'dashPendencias') +
       menuCard('🐞', 'Dashboard de carunchos', 'Capturas por armazém e armadilha', 'dashCarunchos') +
+      menuCard('⚠️', 'Ocorrências da inspeção', 'Avaria, goteira e risco de queda/tombamento por armazém', 'dashOcorrencias') +
       menuCard('🧹', 'Dashboard de limpeza', 'Checklists realizados e pendentes', 'dashChecklist') +
     '</div>'
   );
@@ -1708,6 +1764,110 @@ function downloadBase64File(filename, base64, mime) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+async function renderDashOcorrencias() {
+  app.appendChild(el(screenHeader('Ocorrências da inspeção', S.unidade.UNIDADE)));
+
+  const filterWrap = el(
+    '<div class="filters">' +
+      '<select id="fPeriodo">' +
+        '<option value="tudo">Todo o período</option>' +
+        '<option value="semana">Esta semana</option>' +
+        '<option value="mes">Este mês</option>' +
+        '<option value="custom">Período personalizado</option>' +
+      '</select>' +
+      '<select id="fArmazem"><option value="">Todos os armazéns</option></select>' +
+    '</div>'
+  );
+  app.appendChild(filterWrap);
+  const customWrap = el(
+    '<div class="filters" id="customDates" style="display:none">' +
+      '<input type="date" id="fDataInicial">' +
+      '<input type="date" id="fDataFinal">' +
+      '<button class="btn btn--outline btn--sm" id="btnAplicar">Aplicar</button>' +
+    '</div>'
+  );
+  app.appendChild(customWrap);
+
+  const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
+  app.appendChild(body);
+
+  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const selArmazem = document.getElementById('fArmazem');
+  armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
+
+  const selPeriodo = document.getElementById('fPeriodo');
+  const customDates = document.getElementById('customDates');
+  selPeriodo.onchange = function () {
+    customDates.style.display = selPeriodo.value === 'custom' ? 'flex' : 'none';
+    if (selPeriodo.value !== 'custom') load();
+  };
+  document.getElementById('btnAplicar').onclick = load;
+  selArmazem.onchange = load;
+
+  async function load() {
+    body.innerHTML = '<p class="subtle">Carregando…</p>';
+    let range = { dataInicial: '', dataFinal: '' };
+    if (selPeriodo.value === 'custom') {
+      const ini = document.getElementById('fDataInicial').value;
+      const fim = document.getElementById('fDataFinal').value;
+      if (ini) range.dataInicial = dateToBR(new Date(ini + 'T00:00:00'));
+      if (fim) range.dataFinal = dateToBR(new Date(fim + 'T00:00:00'));
+    } else {
+      range = periodoRange(selPeriodo.value);
+    }
+    const d = await api('getDashboardOcorrencias', {
+      unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
+      dataInicial: range.dataInicial, dataFinal: range.dataFinal
+    }).catch(function () { return null; });
+    body.innerHTML = '';
+    if (!d) return;
+
+    let comparativoHtml = '';
+    if (selPeriodo.value !== 'tudo') {
+      const rangeAnterior = periodoAnteriorRange(range);
+      if (rangeAnterior) {
+        const dAnterior = await api('getDashboardOcorrencias', {
+          unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
+          dataInicial: rangeAnterior.dataInicial, dataFinal: rangeAnterior.dataFinal
+        }).catch(function () { return null; });
+        if (dAnterior) comparativoHtml = comparativoBadge(d.total, dAnterior.total, true);
+      }
+    }
+
+    body.appendChild(el(
+      '<div class="kpi-grid">' +
+        kpi(d.total, 'Total de ocorrências') +
+        kpi(d.produtoAvariado.total, 'Produto avariado') +
+        kpi(d.goteira.total, 'Goteiras') +
+        kpi(d.riscoQuedaTombamento.total, 'Risco queda/tombamento') +
+      '</div>'
+    ));
+    if (comparativoHtml) body.appendChild(el('<div style="margin-top:-4px">' + comparativoHtml + '</div>'));
+
+    body.appendChild(barCard('Ocorrências por armazém (todos os tipos)', d.porArmazem));
+    body.appendChild(barCard('Produto avariado por armazém', d.produtoAvariado.porArmazem));
+    body.appendChild(barCard('Goteiras por armazém', d.goteira.porArmazem));
+    body.appendChild(barCard('Risco de queda/tombamento por armazém', d.riscoQuedaTombamento.porArmazem));
+    body.appendChild(evolucaoCard('Evolução das ocorrências por data', d.registros));
+
+    if (d.registros.length) {
+      const listCard = el('<div class="card stack"><h3 class="title-lg">Ocorrências recentes</h3></div>');
+      body.appendChild(listCard);
+      const tableWrap = el('<div style="overflow-x:auto"></div>');
+      listCard.appendChild(tableWrap);
+      const recentes = d.registros.slice().sort(function (a, b) {
+        const da = parseBR(a.DATA), db = parseBR(b.DATA);
+        return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
+      }).slice(0, 15);
+      tableWrap.appendChild(buildPreviewTable(
+        [['DATA', 'Data'], ['ARMAZEM', 'Armazém'], ['TIPO', 'Tipo'], ['DESCRICAO', 'Descrição'], ['USUARIO', 'Conferente']],
+        recentes
+      ));
+    }
+  }
+  load();
 }
 
 async function renderDashCarunchos() {

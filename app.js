@@ -1363,11 +1363,15 @@ async function renderValidacaoInspecoes() {
     listWrap.innerHTML = '';
     if (!rows.length) { listWrap.appendChild(el('<div class="empty"><span class="ic">🔎</span>Nenhuma inspeção encontrada.</div>')); return; }
     rows.forEach(function (i) {
+      const resumo = i.RESUMO_OCORRENCIAS
+        ? '<div class="list-item__sub" style="color:var(--st-risco);font-weight:600;margin-top:2px">⚠ ' + escapeHtml(i.RESUMO_OCORRENCIAS) + '</div>'
+        : '<div class="list-item__sub" style="color:var(--st-finalizada);margin-top:2px">✓ Sem ocorrências</div>';
       const item = el(
         '<button type="button" class="list-item" style="width:100%">' +
           '<span><span class="shiplabel">' + escapeHtml(i.ID_INSPECAO) + '</span>' +
           '<div class="list-item__title" style="margin-top:6px">' + escapeHtml(i.ARMAZEM) + ' — ' + escapeHtml(i.USUARIO) + '</div>' +
-          '<div class="list-item__sub">' + escapeHtml(i.DATA) + ' ' + escapeHtml(i.HORA) + '</div></span>' +
+          '<div class="list-item__sub">' + escapeHtml(i.DATA) + ' ' + escapeHtml(i.HORA) + '</div>' +
+          resumo + '</span>' +
           '<span class="tag ' + statusInspecaoTag(i.RESULTADO) + '">' + statusInspecaoLabel(i.RESULTADO) + '</span>' +
         '</button>'
       );

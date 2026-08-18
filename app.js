@@ -344,6 +344,8 @@ function render() {
     dashCarunchos: renderDashCarunchos,
     dashInspecoes: renderDashInspecoes,
     dashOcorrencias: renderDashOcorrencias,
+    manutencoes: renderManutencoes,
+    manutencaoDetalhe: renderManutencaoDetalhe,
     relatorios: renderRelatorios,
     relatorioDetalhe: renderRelatorioDetalhe,
     dashChecklist: renderDashChecklist,
@@ -543,22 +545,30 @@ function renderInspecao() {
   const w = S.wizard;
 
   if (w.step === 'armazem') return stepArmazem(w, function () { w.step = 'avaria'; render(); });
-  if (w.step === 'avaria') return stepAvaria(w);
 
-  if (w.step === 'goteira') return stepGoteira(w);
-  if (w.step === 'quedaTombamento') return stepSimNao(w, {
-    key: 'quedaTombamento', title: 'Existem cargas ou baias com risco de queda ou tombamento?', next: 'carunchos',
-    onYes: function (data) { w.ocorrencias.push({ tipo: 'Risco de queda/tombamento', descricao: 'Local/baia: ' + data.local + ' — Ações: ' + data.acoes + (data.obs ? ' — Obs: ' + data.obs : ''), foto: data.foto }); },
-    fields: function (c) {
-      const local = textField(c, { label: 'Qual local/baia?' });
-      const acoes = textField(c, { label: 'Quais ações foram realizadas para eliminar o risco?', multiline: true });
-      const obs = textField(c, { label: 'Observação (opcional)', multiline: true });
-      const foto = photoField(c, { label: 'Foto da carga/baia', required: true });
-      return { get: function () { return { local: local.getValue(), acoes: acoes.getValue(), obs: obs.getValue(), foto: foto.getValue() }; }, validate: function () { return !!foto.getValue(); } };
-    }
+  if (w.step === 'avaria') return stepMultiplo(w, {
+    titulo: 'Produto avariado?', itemLabel: 'Avaria', perguntaQuantidade: 'Quantas avarias foram encontradas?',
+    tipoOcorrencia: 'Produto avariado', next: 'goteira',
+    campos: [{ key: 'rua', label: 'Qual rua?' }, { key: 'baia', label: 'Qual baia?' }, { key: 'obs', label: 'Observação', multiline: true }],
+    montarDescricao: function (v) { return 'Local: ' + v.rua + ' / Baia: ' + v.baia + (v.obs ? ' — ' + v.obs : ''); }
+  });
+
+  if (w.step === 'goteira') return stepMultiplo(w, {
+    titulo: 'Novas goteiras encontradas?', itemLabel: 'Goteira', perguntaQuantidade: 'Quantas novas goteiras foram encontradas?',
+    tipoOcorrencia: 'Goteira', next: 'quedaTombamento',
+    campos: [{ key: 'rua', label: 'Qual rua?' }, { key: 'baia', label: 'Qual baia?' }, { key: 'obs', label: 'Observação', multiline: true }],
+    montarDescricao: function (v) { return 'Rua: ' + v.rua + ' / Baia: ' + v.baia + (v.obs ? ' — ' + v.obs : ''); }
+  });
+
+  if (w.step === 'quedaTombamento') return stepMultiplo(w, {
+    titulo: 'Existem cargas ou baias com risco de queda ou tombamento?', itemLabel: 'Risco', perguntaQuantidade: 'Quantos pontos de risco foram encontrados?',
+    tipoOcorrencia: 'Risco de queda/tombamento', next: 'carunchos',
+    campos: [{ key: 'local', label: 'Qual local/baia?' }, { key: 'acoes', label: 'Quais ações foram realizadas para eliminar o risco?', multiline: true }, { key: 'obs', label: 'Observação', multiline: true }],
+    montarDescricao: function (v) { return 'Local/baia: ' + v.local + ' — Ações: ' + v.acoes + (v.obs ? ' — Obs: ' + v.obs : ''); }
   });
 
   if (w.step === 'carunchos') return stepCarunchos(w);
+  if (w.step === 'manutencao') return stepManutencao(w);
   if (w.step === 'revisao') return stepRevisao(w);
 }
 
@@ -617,123 +627,16 @@ function stepSimNao(w, opts) {
   };
 }
 
-function stepGoteira(w) {
-  const container = el(wizardHeader('Novas goteiras encontradas?'));
+// Helper genérico usado por avaria, goteira e risco de queda/tombamento:
+// pergunta Sim/Não, se Sim pergunta quantas foram encontradas e gera um
+// mini-formulário para cada uma (foto obrigatória em todas).
+function stepMultiplo(w, opts) {
+  const container = el(wizardHeader(opts.titulo));
   app.appendChild(container);
   const card = el('<div class="card stack"></div>');
   app.appendChild(card);
 
-  const yn = yesNoField(card, 'Novas goteiras encontradas?');
-  const sub = el('<div class="stack" style="display:none"></div>');
-  card.appendChild(sub);
-
-  let apiRefs = {};
-
-  yn.node.addEventListener('change', function () {
-    const val = yn.getValue();
-    sub.style.display = val ? 'flex' : 'none';
-    sub.innerHTML = '';
-    apiRefs = {};
-    if (!val) return;
-
-    apiRefs.rua = textField(sub, { label: 'Qual rua?' });
-    apiRefs.baia = textField(sub, { label: 'Qual baia?' });
-    const produtoEmbaixo = yesNoField(sub, 'Existem produtos embaixo da goteira?');
-    apiRefs.produtoEmbaixo = produtoEmbaixo;
-
-    const detalhes = el('<div class="stack" style="display:none;padding-top:4px;border-top:1px dashed var(--line);margin-top:6px"></div>');
-    sub.appendChild(detalhes);
-
-    produtoEmbaixo.node.addEventListener('change', function () {
-      const v = produtoEmbaixo.getValue();
-      detalhes.style.display = v ? 'flex' : 'none';
-      detalhes.innerHTML = '';
-      apiRefs.detalhes = {};
-      if (!v) return;
-      apiRefs.detalhes.bins = textField(detalhes, { label: 'Quais BINs foram atingidos?' });
-      apiRefs.detalhes.demarcada = yesNoField(detalhes, 'A área estava demarcada com X?');
-      apiRefs.detalhes.fotoX = photoField(detalhes, { label: 'Foto da área com X' });
-      apiRefs.detalhes.produto = textField(detalhes, { label: 'Qual produto?' });
-      const removido = yesNoField(detalhes, 'O material foi removido?');
-      apiRefs.detalhes.removido = removido;
-
-      const naoRemovido = el('<div class="stack" style="display:none;padding-top:4px;border-top:1px dashed var(--line);margin-top:6px"></div>');
-      detalhes.appendChild(naoRemovido);
-      removido.node.addEventListener('change', function () {
-        const rv = removido.getValue();
-        naoRemovido.style.display = rv === false ? 'flex' : 'none';
-        naoRemovido.innerHTML = '';
-        apiRefs.naoRemovido = null;
-        if (rv !== false) return;
-        const emCimaX = yesNoField(naoRemovido, 'Existe produto em cima de pontos com goteira marcados com X?');
-        const retirado = yesNoField(naoRemovido, 'O material foi retirado do local inadequado?');
-        const localWrap = el('<div class="stack" style="display:none"></div>');
-        naoRemovido.appendChild(localWrap);
-        let localFields = {};
-        retirado.node.addEventListener('change', function () {
-          const rt = retirado.getValue();
-          localWrap.style.display = rt === false ? 'flex' : 'none';
-          localWrap.innerHTML = '';
-          localFields = {};
-          if (rt !== false) return;
-          localFields.baia = textField(localWrap, { label: 'Qual baia?' });
-          localFields.local = textField(localWrap, { label: 'Qual local?' });
-          localFields.obs = textField(localWrap, { label: 'Observação', multiline: true });
-        });
-        apiRefs.naoRemovido = { emCimaX: emCimaX, retirado: retirado, getLocal: function () { return localFields; } };
-      });
-    });
-  });
-
-  const btn = el('<button class="btn btn--primary btn--block" style="margin-top:6px">Continuar</button>');
-  card.appendChild(btn);
-
-  btn.onclick = function () {
-    const val = yn.getValue();
-    if (val === null) { toast('Selecione Sim ou Não', true); return; }
-    if (val) {
-      const parts = ['Rua: ' + (apiRefs.rua ? apiRefs.rua.getValue() : ''), 'Baia: ' + (apiRefs.baia ? apiRefs.baia.getValue() : '')];
-      let foto = null;
-      const produtoEmbaixoVal = apiRefs.produtoEmbaixo ? apiRefs.produtoEmbaixo.getValue() : null;
-      parts.push('Produto embaixo da goteira: ' + (produtoEmbaixoVal ? 'Sim' : 'Não'));
-      if (produtoEmbaixoVal && apiRefs.detalhes) {
-        const d = apiRefs.detalhes;
-        parts.push('BINs atingidos: ' + d.bins.getValue());
-        parts.push('Área demarcada com X: ' + (d.demarcada.getValue() ? 'Sim' : 'Não'));
-        parts.push('Produto: ' + d.produto.getValue());
-        const removidoVal = d.removido.getValue();
-        parts.push('Material removido: ' + (removidoVal ? 'Sim' : 'Não'));
-        foto = d.fotoX.getValue();
-        if (removidoVal === false && apiRefs.naoRemovido) {
-          const nr = apiRefs.naoRemovido;
-          parts.push('Produto em cima de ponto marcado com X: ' + (nr.emCimaX.getValue() ? 'Sim' : 'Não'));
-          const retiradoVal = nr.retirado.getValue();
-          parts.push('Material retirado do local inadequado: ' + (retiradoVal ? 'Sim' : 'Não'));
-          if (retiradoVal === false) {
-            const loc = nr.getLocal();
-            parts.push('Baia: ' + (loc.baia ? loc.baia.getValue() : ''));
-            parts.push('Local: ' + (loc.local ? loc.local.getValue() : ''));
-            parts.push('Observação: ' + (loc.obs ? loc.obs.getValue() : ''));
-          }
-        }
-      }
-      w.ocorrencias.push({ tipo: 'Goteira', descricao: parts.join(' | '), foto: foto });
-    }
-    w.step = 'quedaTombamento';
-    render();
-  };
-}
-
-// Igual ao padrão dos carunchos: pergunta quantas avarias foram
-// encontradas e gera um mini-formulário para cada uma (cada avaria conta
-// como 1 registro no dashboard — "Total de avarias" soma esses registros).
-function stepAvaria(w) {
-  const container = el(wizardHeader('Produto avariado?'));
-  app.appendChild(container);
-  const card = el('<div class="card stack"></div>');
-  app.appendChild(card);
-
-  const yn = yesNoField(card, 'Produto avariado?');
+  const yn = yesNoField(card, opts.titulo);
   const sub = el('<div class="stack" style="display:none"></div>');
   card.appendChild(sub);
 
@@ -744,7 +647,7 @@ function stepAvaria(w) {
     sub.style.display = val ? 'flex' : 'none';
     sub.innerHTML = '';
     if (!val) return;
-    const qtd = textField(sub, { label: 'Quantas avarias foram encontradas?', type: 'number' });
+    const qtd = textField(sub, { label: opts.perguntaQuantidade, type: 'number' });
     const btnGerar = el('<button type="button" class="btn btn--outline btn--sm" style="align-self:flex-start">Gerar formulários</button>');
     sub.appendChild(btnGerar);
     const listWrap = el('<div class="stack"></div>');
@@ -756,13 +659,14 @@ function stepAvaria(w) {
       listWrap.innerHTML = '';
       entries = [];
       for (let i = 0; i < n; i++) {
-        const box = el('<div class="card" style="padding:14px;background:#fafbfa"><h3 class="title-lg" style="margin-bottom:8px">Avaria ' + (i + 1) + '</h3></div>');
+        const box = el('<div class="card" style="padding:14px;background:#fafbfa"><h3 class="title-lg" style="margin-bottom:8px">' + escapeHtml(opts.itemLabel) + ' ' + (i + 1) + '</h3></div>');
         listWrap.appendChild(box);
-        const rua = textField(box, { label: 'Qual rua?' });
-        const baia = textField(box, { label: 'Qual baia?' });
-        const obs = textField(box, { label: 'Observação', multiline: true });
-        const foto = photoField(box, { label: 'Foto do produto avariado', required: true });
-        entries.push({ rua: rua, baia: baia, obs: obs, foto: foto });
+        const camposRefs = {};
+        opts.campos.forEach(function (c) {
+          camposRefs[c.key] = textField(box, { label: c.label, multiline: !!c.multiline });
+        });
+        const foto = photoField(box, { label: opts.fotoLabel || 'Foto', required: true });
+        entries.push({ campos: camposRefs, foto: foto });
       }
     };
   });
@@ -773,19 +677,17 @@ function stepAvaria(w) {
     const val = yn.getValue();
     if (val === null) { toast('Selecione Sim ou Não', true); return; }
     if (val) {
-      if (!entries.length) { toast('Gere e preencha os formulários das avarias', true); return; }
+      if (!entries.length) { toast('Gere e preencha os formulários', true); return; }
       for (const e of entries) {
-        if (!e.foto.getValue()) { toast('A foto é obrigatória em todas as avarias', true); return; }
+        if (!e.foto.getValue()) { toast('A foto é obrigatória em todos os registros', true); return; }
       }
       entries.forEach(function (e) {
-        w.ocorrencias.push({
-          tipo: 'Produto avariado',
-          descricao: 'Local: ' + e.rua.getValue() + ' / Baia: ' + e.baia.getValue() + (e.obs.getValue() ? ' — ' + e.obs.getValue() : ''),
-          foto: e.foto.getValue()
-        });
+        const valores = {};
+        Object.keys(e.campos).forEach(function (k) { valores[k] = e.campos[k].getValue(); });
+        w.ocorrencias.push({ tipo: opts.tipoOcorrencia, descricao: opts.montarDescricao(valores), foto: e.foto.getValue() });
       });
     }
-    w.step = 'goteira';
+    w.step = opts.next;
     render();
   };
 }
@@ -864,6 +766,76 @@ function stepCarunchos(w) {
         });
       });
     }
+    w.step = 'manutencao';
+    render();
+  };
+}
+
+// Área separada de Pendências: se marcado, gera um registro na aba de
+// Manutenções (com seu próprio status Pendente/Concluída).
+function stepManutencao(w) {
+  const container = el(wizardHeader('Manutenção', 'Precisa de manutenção? (buraco no piso, estrutura batida, fresta na parede, tomada etc. Não repetir se já enviado antes)'));
+  app.appendChild(container);
+  const card = el('<div class="card stack"></div>');
+  app.appendChild(card);
+
+  const yn = yesNoField(card, 'Precisa de manutenção?');
+  const sub = el('<div class="stack" style="display:none"></div>');
+  card.appendChild(sub);
+
+  let refs = null;
+
+  yn.node.addEventListener('change', function () {
+    const val = yn.getValue();
+    sub.style.display = val ? 'flex' : 'none';
+    sub.innerHTML = '';
+    refs = null;
+    if (!val) return;
+
+    const local = textField(sub, { label: 'Local' });
+    const tipoSel = selectField(sub, {
+      label: 'Tipo de manutenção',
+      options: [
+        { value: 'Equipamento', label: 'Equipamento' },
+        { value: 'Estrutura', label: 'Estrutura' },
+        { value: 'Chão', label: 'Chão' },
+        { value: 'Parede', label: 'Parede' },
+        { value: 'Outro', label: 'Outro' }
+      ]
+    });
+    const outroWrap = el('<div style="display:none"></div>');
+    sub.appendChild(outroWrap);
+    let outroField = null;
+    tipoSel.select.onchange = function () {
+      outroWrap.style.display = tipoSel.getValue() === 'Outro' ? 'block' : 'none';
+      outroWrap.innerHTML = '';
+      outroField = null;
+      if (tipoSel.getValue() === 'Outro') outroField = textField(outroWrap, { label: 'Especifique o tipo' });
+    };
+    const descricao = textField(sub, { label: 'Descrição da manutenção necessária', multiline: true });
+    const foto = photoField(sub, { label: 'Foto', required: true });
+    refs = { local: local, tipoSel: tipoSel, getOutro: function () { return outroField ? outroField.getValue() : ''; }, descricao: descricao, foto: foto };
+  });
+
+  const btn = el('<button class="btn btn--primary btn--block" style="margin-top:6px">Continuar</button>');
+  card.appendChild(btn);
+  btn.onclick = function () {
+    const val = yn.getValue();
+    if (val === null) { toast('Selecione Sim ou Não', true); return; }
+    if (val) {
+      if (!refs) { toast('Preencha os dados da manutenção', true); return; }
+      if (!refs.tipoSel.getValue()) { toast('Selecione o tipo de manutenção', true); return; }
+      if (refs.tipoSel.getValue() === 'Outro' && !refs.getOutro()) { toast('Especifique o tipo de manutenção', true); return; }
+      if (!refs.foto.getValue()) { toast('A foto é obrigatória', true); return; }
+      w.manutencao = {
+        local: refs.local.getValue(),
+        tipo: refs.tipoSel.getValue() === 'Outro' ? refs.getOutro() : refs.tipoSel.getValue(),
+        descricao: refs.descricao.getValue(),
+        foto: refs.foto.getValue()
+      };
+    } else {
+      w.manutencao = null;
+    }
     w.step = 'revisao';
     render();
   };
@@ -878,7 +850,7 @@ function stepRevisao(w) {
   card.appendChild(el('<div class="row between"><span class="subtle">Armazém</span><strong>' + escapeHtml(w.armazem) + '</strong></div>'));
   card.appendChild(el('<div class="divider"></div>'));
 
-  if (!w.ocorrencias.length && !w.capturas.length) {
+  if (!w.ocorrencias.length && !w.capturas.length && !w.manutencao) {
     card.appendChild(el('<p class="subtle">Nenhuma ocorrência registrada. Tudo certo nesta inspeção. ✅</p>'));
   } else {
     w.ocorrencias.forEach(function (o) {
@@ -887,6 +859,9 @@ function stepRevisao(w) {
     w.capturas.forEach(function (c) {
       card.appendChild(el('<div class="list-item" style="cursor:default"><span><span class="list-item__title">Captura — ' + escapeHtml(c.armadilha) + '</span><div class="list-item__sub">Qtd: ' + escapeHtml(c.quantidade) + '</div></span></div>'));
     });
+    if (w.manutencao) {
+      card.appendChild(el('<div class="list-item" style="cursor:default"><span><span class="list-item__title">🔧 Manutenção — ' + escapeHtml(w.manutencao.tipo) + '</span><div class="list-item__sub">' + escapeHtml(w.manutencao.local) + (w.manutencao.descricao ? ' — ' + escapeHtml(w.manutencao.descricao) : '') + '</div></span><span>📷</span></div>'));
+    }
   }
 
   const obsWrap = el('<div></div>');
@@ -904,7 +879,7 @@ function stepRevisao(w) {
     try {
       await api('createInspecao', {
         unidade: S.unidade.UNIDADE, idUsuario: S.usuario.ID_USUARIO, usuario: S.usuario.NOME,
-        armazem: w.armazem, ocorrencias: w.ocorrencias, capturas: w.capturas, observacao: obsField.getValue()
+        armazem: w.armazem, ocorrencias: w.ocorrencias, capturas: w.capturas, manutencao: w.manutencao || null, observacao: obsField.getValue()
       });
       toast('Inspeção enviada com sucesso!', false, true);
       S.wizard = null;
@@ -1328,6 +1303,7 @@ function renderAdminHome() {
       menuCard('📋', 'Dashboard de pendências', 'Status e distribuição', 'dashPendencias') +
       menuCard('🐞', 'Dashboard de carunchos', 'Capturas por armazém e armadilha', 'dashCarunchos') +
       menuCard('⚠️', 'Ocorrências da inspeção', 'Avaria, goteira e risco de queda/tombamento por armazém', 'dashOcorrencias') +
+      menuCard('🔧', 'Manutenções', 'Itens pendentes e concluídos, por armazém', 'manutencoes') +
       menuCard('🧹', 'Dashboard de limpeza', 'Checklists realizados e pendentes', 'dashChecklist') +
     '</div>'
   );
@@ -1880,6 +1856,111 @@ async function renderDashOcorrencias() {
     }
   }
   load();
+}
+
+// ------------------------- MANUTENÇÕES (área separada de Pendências) -------------------------
+
+async function renderManutencoes() {
+  app.appendChild(el(screenHeader('Manutenções', S.unidade.UNIDADE)));
+
+  const filterWrap = el(
+    '<div class="filters">' +
+      '<select id="fStatus">' +
+        '<option value="">Todos os status</option>' +
+        '<option value="PENDENTE">Pendente</option>' +
+        '<option value="CONCLUIDA">Concluída</option>' +
+      '</select>' +
+      '<select id="fArmazem"><option value="">Todos os armazéns</option></select>' +
+    '</div>'
+  );
+  app.appendChild(filterWrap);
+  const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
+  app.appendChild(body);
+
+  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const selArmazem = document.getElementById('fArmazem');
+  armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
+  const selStatus = document.getElementById('fStatus');
+  selArmazem.onchange = load;
+  selStatus.onchange = load;
+
+  async function load() {
+    body.innerHTML = '<p class="subtle">Carregando…</p>';
+    const d = await api('getDashboardManutencoes', { unidade: S.unidade.UNIDADE, armazem: selArmazem.value }).catch(function () { return null; });
+    const lista = await api('getManutencoes', { unidade: S.unidade.UNIDADE, armazem: selArmazem.value, status: selStatus.value }).catch(function () { return []; });
+    body.innerHTML = '';
+    if (!d) return;
+
+    body.appendChild(el(
+      '<div class="kpi-grid">' + kpi(d.pendentes, 'Pendentes') + kpi(d.concluidas, 'Concluídas') + kpi(d.total, 'Total') + '</div>'
+    ));
+    body.appendChild(barCard('Por armazém', d.porArmazem));
+    body.appendChild(barCard('Por tipo', d.porTipo));
+    body.appendChild(evolucaoCard('Evolução das manutenções por data', d.registros, function (r) { return String(r.DATA_ABERTURA || '').split(' ')[0]; }));
+
+    const listCard = el('<div class="card stack"><h3 class="title-lg">Lista de manutenções</h3></div>');
+    body.appendChild(listCard);
+    if (!lista.length) { listCard.appendChild(el('<p class="subtle">Nenhuma manutenção encontrada.</p>')); return; }
+    lista.forEach(function (m) {
+      const tag = m.STATUS === 'CONCLUIDA' ? '<span class="tag tag--finalizada">Concluída</span>' : '<span class="tag tag--aberta">Pendente</span>';
+      const item = el(
+        '<button type="button" class="list-item" style="width:100%">' +
+          '<span><span class="shiplabel">' + escapeHtml(m.ID_MANUTENCAO) + '</span>' +
+          '<div class="list-item__title" style="margin-top:6px">' + escapeHtml(m.TIPO) + ' — ' + escapeHtml(m.ARMAZEM) + '</div>' +
+          '<div class="list-item__sub">' + escapeHtml(m.LOCAL) + ' · ' + escapeHtml(m.DATA_ABERTURA) + '</div></span>' +
+          tag +
+        '</button>'
+      );
+      item.onclick = function () { go('manutencaoDetalhe', { manutencaoAtual: m }); };
+      listCard.appendChild(item);
+    });
+  }
+  load();
+}
+
+function renderManutencaoDetalhe() {
+  const m = S.manutencaoAtual;
+  appendHtml(app,
+    screenHeader('Manutenção ' + m.ID_MANUTENCAO, m.TIPO) +
+    '<button class="btn btn--outline btn--sm" id="btnVoltar" style="align-self:flex-start;margin-top:-8px">← Voltar</button>'
+  );
+  document.getElementById('btnVoltar').onclick = function () { go('manutencoes'); };
+
+  const card = el('<div class="card stack"></div>');
+  app.appendChild(card);
+  const tag = m.STATUS === 'CONCLUIDA' ? '<span class="tag tag--finalizada">Concluída</span>' : '<span class="tag tag--aberta">Pendente</span>';
+  card.appendChild(el('<div class="row between"><span class="subtle">Status</span>' + tag + '</div>'));
+  card.appendChild(el('<div class="row between"><span class="subtle">Armazém</span><strong>' + escapeHtml(m.ARMAZEM) + '</strong></div>'));
+  card.appendChild(el('<div class="row between"><span class="subtle">Local</span><strong>' + escapeHtml(m.LOCAL) + '</strong></div>'));
+  card.appendChild(el('<div class="row between"><span class="subtle">Registrado por</span><strong>' + escapeHtml(m.CONFERENTE) + '</strong></div>'));
+  card.appendChild(el('<div class="row between"><span class="subtle">Data de abertura</span><strong>' + escapeHtml(m.DATA_ABERTURA) + '</strong></div>'));
+  card.appendChild(el('<div class="divider"></div>'));
+  card.appendChild(el('<p><strong>Descrição</strong><br>' + escapeHtml(m.DESCRICAO || '—') + '</p>'));
+  if (m.FOTO) card.appendChild(el('<img class="photo-preview" src="' + m.FOTO + '">'));
+
+  if (m.STATUS === 'PENDENTE') {
+    const concluirWrap = el('<div class="card stack"><h3 class="title-lg">Concluir manutenção</h3></div>');
+    app.appendChild(concluirWrap);
+    const desc = textField(concluirWrap, { label: 'O que foi feito? *', multiline: true });
+    const foto = photoField(concluirWrap, { label: 'Foto de comprovação', required: true });
+    const btn = el('<button class="btn btn--primary btn--block">Marcar como concluída</button>');
+    concluirWrap.appendChild(btn);
+    btn.onclick = async function () {
+      if (!desc.getValue()) { toast('Descreva o que foi feito', true); return; }
+      if (!foto.getValue()) { toast('A foto de comprovação é obrigatória', true); return; }
+      btn.disabled = true; btn.textContent = 'Enviando…';
+      try {
+        await api('concluirManutencao', { idManutencao: m.ID_MANUTENCAO, descricaoConclusao: desc.getValue(), fotoConclusao: foto.getValue() });
+        toast('Manutenção concluída!', false, true);
+        go('manutencoes');
+      } catch (e) { btn.disabled = false; btn.textContent = 'Marcar como concluída'; }
+    };
+  } else {
+    card.appendChild(el('<div class="divider"></div>'));
+    card.appendChild(el('<p><strong>O que foi feito</strong><br>' + escapeHtml(m.DESCRICAO_CONCLUSAO || '—') + '</p>'));
+    if (m.FOTO_CONCLUSAO) card.appendChild(el('<img class="photo-preview" src="' + m.FOTO_CONCLUSAO + '">'));
+    card.appendChild(el('<div class="row between"><span class="subtle">Concluída em</span><strong>' + escapeHtml(m.DATA_CONCLUSAO) + '</strong></div>'));
+  }
 }
 
 async function renderDashCarunchos() {

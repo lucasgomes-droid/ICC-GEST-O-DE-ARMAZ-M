@@ -1313,7 +1313,7 @@ function renderAdminHome() {
 // ------------------------- ADMIN: VALIDAÇÃO DE INSPEÇÕES -------------------------
 
 async function renderValidacaoInspecoes() {
-  app.appendChild(el(screenHeader('Validação de inspeções', S.unidade.UNIDADE)));
+  app.appendChild(el(screenHeader('Validação de inspeções', S.unidade.UNIDADE, 'Só aparecem inspeções com algum registro (avaria, goteira, risco ou captura)')));
   const filterWrap = el(
     '<div class="filters">' +
       '<select id="fArmazem"><option value="">Todos os armazéns</option></select>' +
@@ -1321,7 +1321,7 @@ async function renderValidacaoInspecoes() {
         '<option value="">Todos os status</option>' +
         '<option value="PENDENTE_VALIDACAO">Pendente de validação</option>' +
         '<option value="APROVADA">Aprovada</option>' +
-        '<option value="COM_PENDENCIA">Com pendência</option>' +
+        '<option value="REPROVADA">Reprovada</option>' +
       '</select>' +
     '</div>'
   );
@@ -1335,13 +1335,11 @@ async function renderValidacaoInspecoes() {
 
   async function load() {
     listWrap.innerHTML = '<p class="subtle">Carregando…</p>';
-    const rows = await api('getInspecoes', { unidade: S.unidade.UNIDADE, armazem: selArm.value, status: document.getElementById('fResultado').value }).catch(function () { return []; });
+    const rows = await api('getInspecoes', { unidade: S.unidade.UNIDADE, armazem: selArm.value, status: document.getElementById('fResultado').value, apenasComOcorrencias: true }).catch(function () { return []; });
     listWrap.innerHTML = '';
-    if (!rows.length) { listWrap.appendChild(el('<div class="empty"><span class="ic">🔎</span>Nenhuma inspeção encontrada.</div>')); return; }
+    if (!rows.length) { listWrap.appendChild(el('<div class="empty"><span class="ic">🔎</span>Nenhuma inspeção com registros encontrada.</div>')); return; }
     rows.forEach(function (i) {
-      const resumo = i.RESUMO_OCORRENCIAS
-        ? '<div class="list-item__sub" style="color:var(--st-risco);font-weight:600;margin-top:2px">⚠ ' + escapeHtml(i.RESUMO_OCORRENCIAS) + '</div>'
-        : '<div class="list-item__sub" style="color:var(--st-finalizada);margin-top:2px">✓ Sem ocorrências</div>';
+      const resumo = '<div class="list-item__sub" style="color:var(--st-risco);font-weight:600;margin-top:2px">⚠ ' + escapeHtml(i.RESUMO_OCORRENCIAS) + '</div>';
       const item = el(
         '<button type="button" class="list-item" style="width:100%">' +
           '<span><span class="shiplabel">' + escapeHtml(i.ID_INSPECAO) + '</span>' +
@@ -1361,10 +1359,10 @@ async function renderValidacaoInspecoes() {
 }
 
 function statusInspecaoLabel(r) {
-  return { PENDENTE_VALIDACAO: 'Pendente', APROVADA: 'Aprovada', COM_PENDENCIA: 'Com pendência' }[r] || r;
+  return { PENDENTE_VALIDACAO: 'Pendente', APROVADA: 'Aprovada', REPROVADA: 'Reprovada' }[r] || r;
 }
 function statusInspecaoTag(r) {
-  return { PENDENTE_VALIDACAO: 'tag--aberta', APROVADA: 'tag--finalizada', COM_PENDENCIA: 'tag--validacao' }[r] || 'tag--aberta';
+  return { PENDENTE_VALIDACAO: 'tag--aberta', APROVADA: 'tag--finalizada', REPROVADA: 'tag--risco' }[r] || 'tag--aberta';
 }
 
 async function renderInspecaoDetalheAdmin() {
@@ -1408,22 +1406,23 @@ async function renderInspecaoDetalheAdmin() {
     card.appendChild(el('<p class="subtle">Nenhuma ocorrência ou captura registrada nesta inspeção.</p>'));
   }
 
-  const actWrap = el('<div class="card stack"><h3 class="title-lg">Avaliar inspeção</h3></div>');
+  const actWrap = el('<div class="card stack"><h3 class="title-lg">Avaliar inspeção</h3><p class="subtle" style="margin-top:-6px">Reprovar exclui esses registros dos dashboards (avaria/goteira/risco/captura tratados como não confirmados)</p></div>');
   app.appendChild(actWrap);
   const row = el('<div class="row" style="gap:10px"></div>');
   actWrap.appendChild(row);
   const btnAprovar = el('<button class="btn btn--primary" style="flex:1">Aprovada</button>');
-  const btnPendencia = el('<button class="btn btn--danger" style="flex:1">Com pendência</button>');
-  row.appendChild(btnAprovar); row.appendChild(btnPendencia);
+  const btnReprovar = el('<button class="btn btn--danger" style="flex:1">Reprovada</button>');
+  row.appendChild(btnAprovar); row.appendChild(btnReprovar);
 
   btnAprovar.onclick = async function () {
     await api('validarInspecao', { idInspecao: i.ID_INSPECAO, resultado: 'APROVADA' });
     toast('Inspeção aprovada.', false, true);
     go('validacaoInspecoes');
   };
-  btnPendencia.onclick = async function () {
-    await api('validarInspecao', { idInspecao: i.ID_INSPECAO, resultado: 'COM_PENDENCIA' });
-    go('registrarPendencia', { pendenciaOrigemInspecao: i });
+  btnReprovar.onclick = async function () {
+    await api('validarInspecao', { idInspecao: i.ID_INSPECAO, resultado: 'REPROVADA' });
+    toast('Inspeção reprovada — os registros não vão contar nos dashboards.', true);
+    go('validacaoInspecoes');
   };
 }
 

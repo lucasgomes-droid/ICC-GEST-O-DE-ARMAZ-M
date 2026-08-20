@@ -157,6 +157,7 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .tag--tratamento{background:#e7f0f9;color:var(--st-tratamento)}
 .tag--validacao{background:#f1ecfd;color:var(--st-validacao)}
 .tag--finalizada{background:#e6f6ed;color:var(--st-finalizada)}
+.tag--risco{background:#fdeceb;color:var(--st-risco)}
 
 /* "etiqueta de expedição" — o elemento de assinatura visual do app */
 .shiplabel{

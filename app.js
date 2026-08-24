@@ -1319,9 +1319,8 @@ async function renderValidacaoInspecoes() {
       '<select id="fArmazem"><option value="">Todos os armazéns</option></select>' +
       '<select id="fResultado">' +
         '<option value="">Todos os status</option>' +
-        '<option value="PENDENTE_VALIDACAO">Pendente de validação</option>' +
-        '<option value="APROVADA">Aprovada</option>' +
-        '<option value="REPROVADA">Reprovada</option>' +
+        '<option value="PENDENTE_VALIDACAO">Com item pendente de revisão</option>' +
+        '<option value="REVISADA">Totalmente revisada</option>' +
       '</select>' +
     '</div>'
   );
@@ -1340,13 +1339,14 @@ async function renderValidacaoInspecoes() {
     if (!rows.length) { listWrap.appendChild(el('<div class="empty"><span class="ic">🔎</span>Nenhuma inspeção com registros encontrada.</div>')); return; }
     rows.forEach(function (i) {
       const resumo = '<div class="list-item__sub" style="color:var(--st-risco);font-weight:600;margin-top:2px">⚠ ' + escapeHtml(i.RESUMO_OCORRENCIAS) + '</div>';
+      const rt = resumoValidacaoTag(i.CONTAGEM_VALIDACAO);
       const item = el(
         '<button type="button" class="list-item" style="width:100%">' +
           '<span><span class="shiplabel">' + escapeHtml(i.ID_INSPECAO) + '</span>' +
           '<div class="list-item__title" style="margin-top:6px">' + escapeHtml(i.ARMAZEM) + ' — ' + escapeHtml(i.USUARIO) + '</div>' +
           '<div class="list-item__sub">' + escapeHtml(i.DATA) + ' ' + escapeHtml(i.HORA) + '</div>' +
           resumo + '</span>' +
-          '<span class="tag ' + statusInspecaoTag(i.RESULTADO) + '">' + statusInspecaoLabel(i.RESULTADO) + '</span>' +
+          '<span class="tag ' + rt.cls + '">' + escapeHtml(rt.label) + '</span>' +
         '</button>'
       );
       item.onclick = function () { go('inspecaoDetalheAdmin', { inspecaoAtual: i }); };
@@ -1358,11 +1358,22 @@ async function renderValidacaoInspecoes() {
   load();
 }
 
-function statusInspecaoLabel(r) {
-  return { PENDENTE_VALIDACAO: 'Pendente', APROVADA: 'Aprovada', REPROVADA: 'Reprovada' }[r] || r;
+// Resumo do progresso de revisão da inspeção, item a item (cada avaria,
+// goteira, risco ou captura é revisada individualmente — ver
+// renderInspecaoDetalheAdmin). Mostrado como tag na lista.
+function resumoValidacaoTag(contagem) {
+  const c = contagem || { PENDENTE: 0, APROVADA: 0, REPROVADA: 0 };
+  const pend = c.PENDENTE || 0, apr = c.APROVADA || 0, rep = c.REPROVADA || 0;
+  if (pend > 0) return { label: pend + ' pendente' + (pend > 1 ? 's' : ''), cls: 'tag--aberta' };
+  if (rep > 0) return { label: apr + ' aprovado' + (apr !== 1 ? 's' : '') + ', ' + rep + ' reprovado' + (rep !== 1 ? 's' : ''), cls: 'tag--risco' };
+  return { label: 'Tudo aprovado', cls: 'tag--finalizada' };
 }
-function statusInspecaoTag(r) {
-  return { PENDENTE_VALIDACAO: 'tag--aberta', APROVADA: 'tag--finalizada', REPROVADA: 'tag--risco' }[r] || 'tag--aberta';
+
+function itemStatusLabel(st) {
+  return { PENDENTE: 'Pendente', APROVADA: 'Aprovada', REPROVADA: 'Reprovada' }[st || 'PENDENTE'];
+}
+function itemStatusTag(st) {
+  return { PENDENTE: 'tag--aberta', APROVADA: 'tag--finalizada', REPROVADA: 'tag--risco' }[st || 'PENDENTE'];
 }
 
 async function renderInspecaoDetalheAdmin() {
@@ -1373,57 +1384,108 @@ async function renderInspecaoDetalheAdmin() {
   );
   document.getElementById('btnVoltar').onclick = function () { go('validacaoInspecoes'); };
 
-  const card = el('<div class="card stack" id="detalhe"><p class="subtle">Carregando…</p></div>');
-  app.appendChild(card);
+  const infoCard = el('<div class="card stack"></div>');
+  app.appendChild(infoCard);
+  infoCard.appendChild(el('<div class="row between"><span class="subtle">Conferente</span><strong>' + escapeHtml(i.USUARIO) + '</strong></div>'));
+  infoCard.appendChild(el('<div class="row between"><span class="subtle">Data / hora</span><strong>' + escapeHtml(i.DATA) + ' ' + escapeHtml(i.HORA) + '</strong></div>'));
+  if (i.OBSERVACAO) infoCard.appendChild(el('<p class="subtle">Obs: ' + escapeHtml(i.OBSERVACAO) + '</p>'));
 
-  const det = await api('getInspecaoDetalhe', { idInspecao: i.ID_INSPECAO }).catch(function () { return null; });
-  card.innerHTML = '';
-  card.appendChild(el('<div class="row between"><span class="subtle">Conferente</span><strong>' + escapeHtml(i.USUARIO) + '</strong></div>'));
-  card.appendChild(el('<div class="row between"><span class="subtle">Data / hora</span><strong>' + escapeHtml(i.DATA) + ' ' + escapeHtml(i.HORA) + '</strong></div>'));
-  if (i.OBSERVACAO) card.appendChild(el('<p class="subtle">Obs: ' + escapeHtml(i.OBSERVACAO) + '</p>'));
-  card.appendChild(el('<div class="divider"></div>'));
+  const itensWrap = el('<div class="stack" id="itensValidacao"><p class="subtle">Carregando…</p></div>');
+  app.appendChild(itensWrap);
 
-  if (det && (det.ocorrencias.length || det.capturas.length)) {
-    det.ocorrencias.forEach(function (o) {
-      const box = el(
-        '<div class="stack" style="padding:10px 0;border-bottom:1px solid var(--line)">' +
-          '<strong>' + escapeHtml(o.TIPO) + '</strong>' +
-          '<p class="subtle">' + escapeHtml(o.DESCRICAO) + '</p>' +
-          (o.FOTO ? '<img class="photo-preview" src="' + escapeHtml(o.FOTO) + '">' : '') +
-        '</div>'
-      );
-      card.appendChild(box);
-    });
-    det.capturas.forEach(function (c) {
-      card.appendChild(el(
-        '<div class="stack" style="padding:10px 0;border-bottom:1px solid var(--line)">' +
-          '<strong>Captura — ' + escapeHtml(c.ARMADILHA) + '</strong>' +
-          '<p class="subtle">Quantidade: ' + escapeHtml(c.QUANTIDADE) + (c.BAIA ? ' · Baia: ' + escapeHtml(c.BAIA) : '') + '</p>' +
-        '</div>'
-      ));
-    });
-  } else {
-    card.appendChild(el('<p class="subtle">Nenhuma ocorrência ou captura registrada nesta inspeção.</p>'));
+  const btnAprovarTudo = el('<button class="btn btn--outline btn--block" id="btnAprovarTudo">✓ Aprovar tudo que ainda está pendente</button>');
+  app.appendChild(btnAprovarTudo);
+  btnAprovarTudo.onclick = async function () {
+    btnAprovarTudo.disabled = true;
+    try {
+      await api('validarInspecao', { idInspecao: i.ID_INSPECAO, adminValidador: S.usuario.NOME });
+      toast('Itens pendentes aprovados.', false, true);
+      carregarItens();
+    } catch (e) { btnAprovarTudo.disabled = false; }
+  };
+
+  async function carregarItens() {
+    itensWrap.innerHTML = '<p class="subtle">Carregando…</p>';
+    const det = await api('getInspecaoDetalhe', { idInspecao: i.ID_INSPECAO }).catch(function () { return null; });
+    itensWrap.innerHTML = '';
+
+    if (!det || (!det.ocorrencias.length && !det.capturas.length)) {
+      itensWrap.appendChild(el('<p class="subtle">Nenhuma ocorrência ou captura registrada nesta inspeção.</p>'));
+      btnAprovarTudo.hidden = true;
+      return;
+    }
+
+    det.ocorrencias.forEach(function (o) { itensWrap.appendChild(itemOcorrenciaBlock(o)); });
+    det.capturas.forEach(function (c) { itensWrap.appendChild(itemCapturaBlock(c)); });
+
+    const aindaPendente = det.ocorrencias.concat(det.capturas).some(function (it) { return !it.STATUS_VALIDACAO || it.STATUS_VALIDACAO === 'PENDENTE'; });
+    btnAprovarTudo.hidden = !aindaPendente;
   }
 
-  const actWrap = el('<div class="card stack"><h3 class="title-lg">Avaliar inspeção</h3><p class="subtle" style="margin-top:-6px">Reprovar exclui esses registros dos dashboards (avaria/goteira/risco/captura tratados como não confirmados)</p></div>');
-  app.appendChild(actWrap);
-  const row = el('<div class="row" style="gap:10px"></div>');
-  actWrap.appendChild(row);
-  const btnAprovar = el('<button class="btn btn--primary" style="flex:1">Aprovada</button>');
-  const btnReprovar = el('<button class="btn btn--danger" style="flex:1">Reprovada</button>');
-  row.appendChild(btnAprovar); row.appendChild(btnReprovar);
+  function itemOcorrenciaBlock(o) {
+    const box = el(
+      '<div class="card stack" style="padding:14px">' +
+        '<div class="row between"><strong>' + escapeHtml(o.TIPO) + '</strong>' +
+        '<span class="tag ' + itemStatusTag(o.STATUS_VALIDACAO) + '" data-role="badge">' + itemStatusLabel(o.STATUS_VALIDACAO) + '</span></div>' +
+        (o.FOTO ? '<img class="photo-preview" src="' + escapeHtml(o.FOTO) + '">' : '') +
+      '</div>'
+    );
+    const descField = textField(box, { label: 'Descrição (corrija aqui se necessário antes de aprovar/reprovar)', multiline: true, value: o.DESCRICAO });
+    if (o.ADMIN_VALIDADOR) box.appendChild(el('<p class="subtle">Revisado por ' + escapeHtml(o.ADMIN_VALIDADOR) + ' em ' + escapeHtml(o.DATA_VALIDACAO) + '</p>'));
+    const row = el('<div class="row" style="gap:10px"></div>');
+    box.appendChild(row);
+    const btnAprovar = el('<button type="button" class="btn btn--primary btn--sm" style="flex:1">Aprovar</button>');
+    const btnReprovar = el('<button type="button" class="btn btn--danger btn--sm" style="flex:1">Reprovar</button>');
+    row.appendChild(btnAprovar); row.appendChild(btnReprovar);
+    function enviar(resultado, btn) {
+      btn.disabled = true;
+      api('validarItemInspecao', {
+        tipo: 'ocorrencia', idItem: o.ID_OCORRENCIA_REGISTRO, idInspecao: i.ID_INSPECAO,
+        resultado: resultado, descricaoCorrigida: descField.getValue(), adminValidador: S.usuario.NOME
+      }).then(function () {
+        toast(resultado === 'APROVADA' ? 'Ocorrência aprovada.' : 'Ocorrência reprovada — não vai contar no dashboard.', resultado === 'REPROVADA', resultado === 'APROVADA');
+        carregarItens();
+      }).catch(function () { btn.disabled = false; });
+    }
+    btnAprovar.onclick = function () { enviar('APROVADA', btnAprovar); };
+    btnReprovar.onclick = function () { enviar('REPROVADA', btnReprovar); };
+    return box;
+  }
 
-  btnAprovar.onclick = async function () {
-    await api('validarInspecao', { idInspecao: i.ID_INSPECAO, resultado: 'APROVADA' });
-    toast('Inspeção aprovada.', false, true);
-    go('validacaoInspecoes');
-  };
-  btnReprovar.onclick = async function () {
-    await api('validarInspecao', { idInspecao: i.ID_INSPECAO, resultado: 'REPROVADA' });
-    toast('Inspeção reprovada — os registros não vão contar nos dashboards.', true);
-    go('validacaoInspecoes');
-  };
+  function itemCapturaBlock(c) {
+    const box = el(
+      '<div class="card stack" style="padding:14px">' +
+        '<div class="row between"><strong>Captura — ' + escapeHtml(c.ARMADILHA) + '</strong>' +
+        '<span class="tag ' + itemStatusTag(c.STATUS_VALIDACAO) + '" data-role="badge">' + itemStatusLabel(c.STATUS_VALIDACAO) + '</span></div>' +
+        (c.BAIA ? '<p class="subtle">Baia: ' + escapeHtml(c.BAIA) + '</p>' : '') +
+        (c.OBSERVACAO ? '<p class="subtle">' + escapeHtml(c.OBSERVACAO) + '</p>' : '') +
+      '</div>'
+    );
+    const qtdField = textField(box, { label: 'Quantidade (corrija aqui se algum não era realmente caruncho)', type: 'number', value: c.QUANTIDADE });
+    if (c.ADMIN_VALIDADOR) box.appendChild(el('<p class="subtle">Revisado por ' + escapeHtml(c.ADMIN_VALIDADOR) + ' em ' + escapeHtml(c.DATA_VALIDACAO) + '</p>'));
+    const row = el('<div class="row" style="gap:10px"></div>');
+    box.appendChild(row);
+    const btnAprovar = el('<button type="button" class="btn btn--primary btn--sm" style="flex:1">Aprovar</button>');
+    const btnReprovar = el('<button type="button" class="btn btn--danger btn--sm" style="flex:1">Reprovar</button>');
+    row.appendChild(btnAprovar); row.appendChild(btnReprovar);
+    function enviar(resultado, btn) {
+      const qtd = qtdField.getValue();
+      if (resultado === 'APROVADA' && qtd !== '' && Number(qtd) < 0) { toast('Quantidade inválida', true); return; }
+      btn.disabled = true;
+      api('validarItemInspecao', {
+        tipo: 'captura', idItem: c.ID_CAPTURA, idInspecao: i.ID_INSPECAO,
+        resultado: resultado, quantidadeCorrigida: qtd, adminValidador: S.usuario.NOME
+      }).then(function () {
+        toast(resultado === 'APROVADA' ? 'Captura aprovada.' : 'Captura reprovada — não vai contar no dashboard.', resultado === 'REPROVADA', resultado === 'APROVADA');
+        carregarItens();
+      }).catch(function () { btn.disabled = false; });
+    }
+    btnAprovar.onclick = function () { enviar('APROVADA', btnAprovar); };
+    btnReprovar.onclick = function () { enviar('REPROVADA', btnReprovar); };
+    return box;
+  }
+
+  carregarItens();
 }
 
 // ------------------------- ADMIN: REGISTRAR PENDÊNCIA -------------------------

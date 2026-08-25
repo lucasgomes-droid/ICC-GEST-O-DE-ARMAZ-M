@@ -726,7 +726,7 @@ function stepCarunchos(w) {
         const box = el('<div class="card" style="padding:14px;background:#fafbfa"><h3 class="title-lg" style="margin-bottom:8px">Armadilha ' + (i + 1) + '</h3></div>');
         listWrap.appendChild(box);
         const armadilhaNum = textField(box, { label: 'Número/identificação da armadilha *', placeholder: 'Ex: 12' });
-        const qtdCaruncho = textField(box, { label: 'Quantidade de carunchos', type: 'number' });
+        const qtdCaruncho = textField(box, { label: 'Quantidade de carunchos *', type: 'number' });
         const produtoProximo = yesNoField(box, 'Existe produto próximo com possibilidade de infestação?');
         const detalhe = el('<div class="stack" style="display:none"></div>');
         box.appendChild(detalhe);
@@ -757,6 +757,7 @@ function stepCarunchos(w) {
       if (!entries.length) { toast('Gere e preencha os formulários das armadilhas', true); return; }
       for (const e of entries) {
         if (!e.armadilha.getValue()) { toast('Informe o número da armadilha em todos os formulários', true); return; }
+        if (e.quantidade.getValue() === '') { toast('Informe a quantidade de carunchos em todos os formulários (pode ser 0)', true); return; }
       }
       entries.forEach(function (e) {
         const extra = e.getExtra();
@@ -1901,18 +1902,36 @@ async function renderResumoGeral() {
       : selPeriodo.value === 'mes' ? 'Este mês'
       : (range.dataInicial || '…') + ' até ' + (range.dataFinal || '…');
 
-    const btnPDF = el('<button class="btn btn--accent btn--block">📄 Baixar PDF (com gráficos e mapa)</button>');
+    const btnPDF = el('<button class="btn btn--accent btn--block">📄 Baixar PDF (com gráficos, mapa e comparativo)</button>');
     body.appendChild(btnPDF);
     btnPDF.onclick = async function () {
       btnPDF.disabled = true; btnPDF.textContent = 'Montando mapas…';
       try {
         const mapasImagens = await capturarImagensDosMapas();
+
+        let anterior = null;
+        let descricaoAnterior = '';
+        if (selPeriodo.value !== 'tudo') {
+          const rangeAnterior = periodoAnteriorRange(range);
+          if (rangeAnterior) {
+            btnPDF.textContent = 'Calculando período anterior…';
+            anterior = await api('getResumoGeral', {
+              unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
+              dataInicial: rangeAnterior.dataInicial, dataFinal: rangeAnterior.dataFinal
+            }).catch(function () { return null; });
+            descricaoAnterior = rangeAnterior.dataInicial + ' até ' + rangeAnterior.dataFinal;
+          }
+        }
+
         btnPDF.textContent = 'Gerando PDF…';
-        const resultado = await api('gerarResumoPDF', { unidade: S.unidade.UNIDADE, periodo: descricaoPeriodo, resumo: d, mapasImagens: mapasImagens });
+        const resultado = await api('gerarResumoPDF', {
+          unidade: S.unidade.UNIDADE, periodo: descricaoPeriodo, resumo: d, mapasImagens: mapasImagens,
+          resumoAnterior: anterior, periodoAnterior: descricaoAnterior
+        });
         downloadBase64File(resultado.filename, resultado.base64, 'application/pdf');
         toast('PDF gerado!', false, true);
       } catch (e) { /* toast já mostrado */ }
-      btnPDF.disabled = false; btnPDF.textContent = '📄 Baixar PDF (com gráficos e mapa)';
+      btnPDF.disabled = false; btnPDF.textContent = '📄 Baixar PDF (com gráficos, mapa e comparativo)';
     };
 
     body.appendChild(el(

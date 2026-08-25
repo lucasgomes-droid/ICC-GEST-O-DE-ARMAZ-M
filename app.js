@@ -345,6 +345,7 @@ function render() {
     dashInspecoes: renderDashInspecoes,
     dashOcorrencias: renderDashOcorrencias,
     manutencoes: renderManutencoes,
+    mapaCapturas: renderMapaCapturas,
     manutencaoDetalhe: renderManutencaoDetalhe,
     relatorios: renderRelatorios,
     relatorioDetalhe: renderRelatorioDetalhe,
@@ -1304,6 +1305,7 @@ function renderAdminHome() {
       menuCard('🐞', 'Dashboard de carunchos', 'Capturas por armazém e armadilha', 'dashCarunchos') +
       menuCard('⚠️', 'Ocorrências da inspeção', 'Avaria, goteira e risco de queda/tombamento por armazém', 'dashOcorrencias') +
       menuCard('🔧', 'Manutenções', 'Itens pendentes e concluídos, por armazém', 'manutencoes') +
+      menuCard('🗺️', 'Mapa de capturas', 'Visualização espacial das armadilhas', 'mapaCapturas') +
       menuCard('🧹', 'Dashboard de limpeza', 'Checklists realizados e pendentes', 'dashChecklist') +
     '</div>'
   );
@@ -1319,8 +1321,9 @@ async function renderValidacaoInspecoes() {
       '<select id="fArmazem"><option value="">Todos os armazéns</option></select>' +
       '<select id="fResultado">' +
         '<option value="">Todos os status</option>' +
-        '<option value="PENDENTE_VALIDACAO">Com item pendente de revisão</option>' +
-        '<option value="REVISADA">Totalmente revisada</option>' +
+        '<option value="PENDENTE_VALIDACAO">Pendente de validação</option>' +
+        '<option value="APROVADA">Aprovada</option>' +
+        '<option value="REPROVADA">Reprovada</option>' +
       '</select>' +
     '</div>'
   );
@@ -1339,14 +1342,13 @@ async function renderValidacaoInspecoes() {
     if (!rows.length) { listWrap.appendChild(el('<div class="empty"><span class="ic">🔎</span>Nenhuma inspeção com registros encontrada.</div>')); return; }
     rows.forEach(function (i) {
       const resumo = '<div class="list-item__sub" style="color:var(--st-risco);font-weight:600;margin-top:2px">⚠ ' + escapeHtml(i.RESUMO_OCORRENCIAS) + '</div>';
-      const rt = resumoValidacaoTag(i.CONTAGEM_VALIDACAO);
       const item = el(
         '<button type="button" class="list-item" style="width:100%">' +
           '<span><span class="shiplabel">' + escapeHtml(i.ID_INSPECAO) + '</span>' +
           '<div class="list-item__title" style="margin-top:6px">' + escapeHtml(i.ARMAZEM) + ' — ' + escapeHtml(i.USUARIO) + '</div>' +
           '<div class="list-item__sub">' + escapeHtml(i.DATA) + ' ' + escapeHtml(i.HORA) + '</div>' +
           resumo + '</span>' +
-          '<span class="tag ' + rt.cls + '">' + escapeHtml(rt.label) + '</span>' +
+          '<span class="tag ' + statusInspecaoTag(i.RESULTADO) + '">' + statusInspecaoLabel(i.RESULTADO) + '</span>' +
         '</button>'
       );
       item.onclick = function () { go('inspecaoDetalheAdmin', { inspecaoAtual: i }); };
@@ -1358,22 +1360,11 @@ async function renderValidacaoInspecoes() {
   load();
 }
 
-// Resumo do progresso de revisão da inspeção, item a item (cada avaria,
-// goteira, risco ou captura é revisada individualmente — ver
-// renderInspecaoDetalheAdmin). Mostrado como tag na lista.
-function resumoValidacaoTag(contagem) {
-  const c = contagem || { PENDENTE: 0, APROVADA: 0, REPROVADA: 0 };
-  const pend = c.PENDENTE || 0, apr = c.APROVADA || 0, rep = c.REPROVADA || 0;
-  if (pend > 0) return { label: pend + ' pendente' + (pend > 1 ? 's' : ''), cls: 'tag--aberta' };
-  if (rep > 0) return { label: apr + ' aprovado' + (apr !== 1 ? 's' : '') + ', ' + rep + ' reprovado' + (rep !== 1 ? 's' : ''), cls: 'tag--risco' };
-  return { label: 'Tudo aprovado', cls: 'tag--finalizada' };
+function statusInspecaoLabel(r) {
+  return { PENDENTE_VALIDACAO: 'Pendente', APROVADA: 'Aprovada', REPROVADA: 'Reprovada' }[r] || r;
 }
-
-function itemStatusLabel(st) {
-  return { PENDENTE: 'Pendente', APROVADA: 'Aprovada', REPROVADA: 'Reprovada' }[st || 'PENDENTE'];
-}
-function itemStatusTag(st) {
-  return { PENDENTE: 'tag--aberta', APROVADA: 'tag--finalizada', REPROVADA: 'tag--risco' }[st || 'PENDENTE'];
+function statusInspecaoTag(r) {
+  return { PENDENTE_VALIDACAO: 'tag--aberta', APROVADA: 'tag--finalizada', REPROVADA: 'tag--risco' }[r] || 'tag--aberta';
 }
 
 async function renderInspecaoDetalheAdmin() {
@@ -1384,108 +1375,57 @@ async function renderInspecaoDetalheAdmin() {
   );
   document.getElementById('btnVoltar').onclick = function () { go('validacaoInspecoes'); };
 
-  const infoCard = el('<div class="card stack"></div>');
-  app.appendChild(infoCard);
-  infoCard.appendChild(el('<div class="row between"><span class="subtle">Conferente</span><strong>' + escapeHtml(i.USUARIO) + '</strong></div>'));
-  infoCard.appendChild(el('<div class="row between"><span class="subtle">Data / hora</span><strong>' + escapeHtml(i.DATA) + ' ' + escapeHtml(i.HORA) + '</strong></div>'));
-  if (i.OBSERVACAO) infoCard.appendChild(el('<p class="subtle">Obs: ' + escapeHtml(i.OBSERVACAO) + '</p>'));
+  const card = el('<div class="card stack" id="detalhe"><p class="subtle">Carregando…</p></div>');
+  app.appendChild(card);
 
-  const itensWrap = el('<div class="stack" id="itensValidacao"><p class="subtle">Carregando…</p></div>');
-  app.appendChild(itensWrap);
+  const det = await api('getInspecaoDetalhe', { idInspecao: i.ID_INSPECAO }).catch(function () { return null; });
+  card.innerHTML = '';
+  card.appendChild(el('<div class="row between"><span class="subtle">Conferente</span><strong>' + escapeHtml(i.USUARIO) + '</strong></div>'));
+  card.appendChild(el('<div class="row between"><span class="subtle">Data / hora</span><strong>' + escapeHtml(i.DATA) + ' ' + escapeHtml(i.HORA) + '</strong></div>'));
+  if (i.OBSERVACAO) card.appendChild(el('<p class="subtle">Obs: ' + escapeHtml(i.OBSERVACAO) + '</p>'));
+  card.appendChild(el('<div class="divider"></div>'));
 
-  const btnAprovarTudo = el('<button class="btn btn--outline btn--block" id="btnAprovarTudo">✓ Aprovar tudo que ainda está pendente</button>');
-  app.appendChild(btnAprovarTudo);
-  btnAprovarTudo.onclick = async function () {
-    btnAprovarTudo.disabled = true;
-    try {
-      await api('validarInspecao', { idInspecao: i.ID_INSPECAO, adminValidador: S.usuario.NOME });
-      toast('Itens pendentes aprovados.', false, true);
-      carregarItens();
-    } catch (e) { btnAprovarTudo.disabled = false; }
+  if (det && (det.ocorrencias.length || det.capturas.length)) {
+    det.ocorrencias.forEach(function (o) {
+      const box = el(
+        '<div class="stack" style="padding:10px 0;border-bottom:1px solid var(--line)">' +
+          '<strong>' + escapeHtml(o.TIPO) + '</strong>' +
+          '<p class="subtle">' + escapeHtml(o.DESCRICAO) + '</p>' +
+          (o.FOTO ? '<img class="photo-preview" src="' + escapeHtml(o.FOTO) + '">' : '') +
+        '</div>'
+      );
+      card.appendChild(box);
+    });
+    det.capturas.forEach(function (c) {
+      card.appendChild(el(
+        '<div class="stack" style="padding:10px 0;border-bottom:1px solid var(--line)">' +
+          '<strong>Captura — ' + escapeHtml(c.ARMADILHA) + '</strong>' +
+          '<p class="subtle">Quantidade: ' + escapeHtml(c.QUANTIDADE) + (c.BAIA ? ' · Baia: ' + escapeHtml(c.BAIA) : '') + '</p>' +
+        '</div>'
+      ));
+    });
+  } else {
+    card.appendChild(el('<p class="subtle">Nenhuma ocorrência ou captura registrada nesta inspeção.</p>'));
+  }
+
+  const actWrap = el('<div class="card stack"><h3 class="title-lg">Avaliar inspeção</h3><p class="subtle" style="margin-top:-6px">Reprovar exclui esses registros dos dashboards (avaria/goteira/risco/captura tratados como não confirmados)</p></div>');
+  app.appendChild(actWrap);
+  const row = el('<div class="row" style="gap:10px"></div>');
+  actWrap.appendChild(row);
+  const btnAprovar = el('<button class="btn btn--primary" style="flex:1">Aprovada</button>');
+  const btnReprovar = el('<button class="btn btn--danger" style="flex:1">Reprovada</button>');
+  row.appendChild(btnAprovar); row.appendChild(btnReprovar);
+
+  btnAprovar.onclick = async function () {
+    await api('validarInspecao', { idInspecao: i.ID_INSPECAO, resultado: 'APROVADA' });
+    toast('Inspeção aprovada.', false, true);
+    go('validacaoInspecoes');
   };
-
-  async function carregarItens() {
-    itensWrap.innerHTML = '<p class="subtle">Carregando…</p>';
-    const det = await api('getInspecaoDetalhe', { idInspecao: i.ID_INSPECAO }).catch(function () { return null; });
-    itensWrap.innerHTML = '';
-
-    if (!det || (!det.ocorrencias.length && !det.capturas.length)) {
-      itensWrap.appendChild(el('<p class="subtle">Nenhuma ocorrência ou captura registrada nesta inspeção.</p>'));
-      btnAprovarTudo.hidden = true;
-      return;
-    }
-
-    det.ocorrencias.forEach(function (o) { itensWrap.appendChild(itemOcorrenciaBlock(o)); });
-    det.capturas.forEach(function (c) { itensWrap.appendChild(itemCapturaBlock(c)); });
-
-    const aindaPendente = det.ocorrencias.concat(det.capturas).some(function (it) { return !it.STATUS_VALIDACAO || it.STATUS_VALIDACAO === 'PENDENTE'; });
-    btnAprovarTudo.hidden = !aindaPendente;
-  }
-
-  function itemOcorrenciaBlock(o) {
-    const box = el(
-      '<div class="card stack" style="padding:14px">' +
-        '<div class="row between"><strong>' + escapeHtml(o.TIPO) + '</strong>' +
-        '<span class="tag ' + itemStatusTag(o.STATUS_VALIDACAO) + '" data-role="badge">' + itemStatusLabel(o.STATUS_VALIDACAO) + '</span></div>' +
-        (o.FOTO ? '<img class="photo-preview" src="' + escapeHtml(o.FOTO) + '">' : '') +
-      '</div>'
-    );
-    const descField = textField(box, { label: 'Descrição (corrija aqui se necessário antes de aprovar/reprovar)', multiline: true, value: o.DESCRICAO });
-    if (o.ADMIN_VALIDADOR) box.appendChild(el('<p class="subtle">Revisado por ' + escapeHtml(o.ADMIN_VALIDADOR) + ' em ' + escapeHtml(o.DATA_VALIDACAO) + '</p>'));
-    const row = el('<div class="row" style="gap:10px"></div>');
-    box.appendChild(row);
-    const btnAprovar = el('<button type="button" class="btn btn--primary btn--sm" style="flex:1">Aprovar</button>');
-    const btnReprovar = el('<button type="button" class="btn btn--danger btn--sm" style="flex:1">Reprovar</button>');
-    row.appendChild(btnAprovar); row.appendChild(btnReprovar);
-    function enviar(resultado, btn) {
-      btn.disabled = true;
-      api('validarItemInspecao', {
-        tipo: 'ocorrencia', idItem: o.ID_OCORRENCIA_REGISTRO, idInspecao: i.ID_INSPECAO,
-        resultado: resultado, descricaoCorrigida: descField.getValue(), adminValidador: S.usuario.NOME
-      }).then(function () {
-        toast(resultado === 'APROVADA' ? 'Ocorrência aprovada.' : 'Ocorrência reprovada — não vai contar no dashboard.', resultado === 'REPROVADA', resultado === 'APROVADA');
-        carregarItens();
-      }).catch(function () { btn.disabled = false; });
-    }
-    btnAprovar.onclick = function () { enviar('APROVADA', btnAprovar); };
-    btnReprovar.onclick = function () { enviar('REPROVADA', btnReprovar); };
-    return box;
-  }
-
-  function itemCapturaBlock(c) {
-    const box = el(
-      '<div class="card stack" style="padding:14px">' +
-        '<div class="row between"><strong>Captura — ' + escapeHtml(c.ARMADILHA) + '</strong>' +
-        '<span class="tag ' + itemStatusTag(c.STATUS_VALIDACAO) + '" data-role="badge">' + itemStatusLabel(c.STATUS_VALIDACAO) + '</span></div>' +
-        (c.BAIA ? '<p class="subtle">Baia: ' + escapeHtml(c.BAIA) + '</p>' : '') +
-        (c.OBSERVACAO ? '<p class="subtle">' + escapeHtml(c.OBSERVACAO) + '</p>' : '') +
-      '</div>'
-    );
-    const qtdField = textField(box, { label: 'Quantidade (corrija aqui se algum não era realmente caruncho)', type: 'number', value: c.QUANTIDADE });
-    if (c.ADMIN_VALIDADOR) box.appendChild(el('<p class="subtle">Revisado por ' + escapeHtml(c.ADMIN_VALIDADOR) + ' em ' + escapeHtml(c.DATA_VALIDACAO) + '</p>'));
-    const row = el('<div class="row" style="gap:10px"></div>');
-    box.appendChild(row);
-    const btnAprovar = el('<button type="button" class="btn btn--primary btn--sm" style="flex:1">Aprovar</button>');
-    const btnReprovar = el('<button type="button" class="btn btn--danger btn--sm" style="flex:1">Reprovar</button>');
-    row.appendChild(btnAprovar); row.appendChild(btnReprovar);
-    function enviar(resultado, btn) {
-      const qtd = qtdField.getValue();
-      if (resultado === 'APROVADA' && qtd !== '' && Number(qtd) < 0) { toast('Quantidade inválida', true); return; }
-      btn.disabled = true;
-      api('validarItemInspecao', {
-        tipo: 'captura', idItem: c.ID_CAPTURA, idInspecao: i.ID_INSPECAO,
-        resultado: resultado, quantidadeCorrigida: qtd, adminValidador: S.usuario.NOME
-      }).then(function () {
-        toast(resultado === 'APROVADA' ? 'Captura aprovada.' : 'Captura reprovada — não vai contar no dashboard.', resultado === 'REPROVADA', resultado === 'APROVADA');
-        carregarItens();
-      }).catch(function () { btn.disabled = false; });
-    }
-    btnAprovar.onclick = function () { enviar('APROVADA', btnAprovar); };
-    btnReprovar.onclick = function () { enviar('REPROVADA', btnReprovar); };
-    return box;
-  }
-
-  carregarItens();
+  btnReprovar.onclick = async function () {
+    await api('validarInspecao', { idInspecao: i.ID_INSPECAO, resultado: 'REPROVADA' });
+    toast('Inspeção reprovada — os registros não vão contar nos dashboards.', true);
+    go('validacaoInspecoes');
+  };
 }
 
 // ------------------------- ADMIN: REGISTRAR PENDÊNCIA -------------------------
@@ -2022,6 +1962,92 @@ function renderManutencaoDetalhe() {
     if (m.FOTO_CONCLUSAO) card.appendChild(el('<img class="photo-preview" src="' + m.FOTO_CONCLUSAO + '">'));
     card.appendChild(el('<div class="row between"><span class="subtle">Concluída em</span><strong>' + escapeHtml(m.DATA_CONCLUSAO) + '</strong></div>'));
   }
+}
+
+// ------------------------- MAPA DE CAPTURAS -------------------------
+
+const MAPA_LABEL = {
+  'mapa_macatuba.png': 'Macatuba',
+  'mapa_jundiai1_principal.png': 'Área principal (G1-G5)',
+  'mapa_jundiai1_mezanino.png': 'Mezanino',
+  'mapa_jundiai1_g7.png': 'G7',
+  'mapa_jundiai2.png': 'Jundiaí II'
+};
+
+function corMarcador(quantidade) {
+  if (quantidade === null || quantidade === undefined) return '#9aa0a6'; // cinza: sem leitura ainda
+  if (quantidade === 0) return '#2f9e64'; // verde
+  if (quantidade <= 2) return '#df8630'; // laranja
+  return '#d64545'; // vermelho: 3+
+}
+
+async function renderMapaCapturas() {
+  appendHtml(app, screenHeader('Mapa de capturas', S.unidade.UNIDADE, 'Posição real das armadilhas — cor conforme a última leitura'));
+
+  const mapas = await api('getMapasDisponiveis', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  if (!mapas.length) {
+    app.appendChild(el('<div class="empty"><span class="ic">🗺️</span>Nenhum mapa cadastrado para esta unidade ainda.</div>'));
+    return;
+  }
+
+  let mapaAtual = mapas[0];
+  if (mapas.length > 1) {
+    const selWrap = el('<div class="filters"></div>');
+    app.appendChild(selWrap);
+    const sel = el('<select>' + mapas.map(function (m) { return '<option value="' + escapeHtml(m) + '">' + escapeHtml(MAPA_LABEL[m] || m) + '</option>'; }).join('') + '</select>');
+    selWrap.appendChild(sel);
+    sel.onchange = function () { mapaAtual = sel.value; load(); };
+  }
+
+  const legenda = el(
+    '<div class="row" style="gap:14px;flex-wrap:wrap;font-size:12.5px">' +
+      '<span class="row" style="gap:5px"><span style="width:12px;height:12px;border-radius:50%;background:#2f9e64;display:inline-block"></span>0 capturas</span>' +
+      '<span class="row" style="gap:5px"><span style="width:12px;height:12px;border-radius:50%;background:#df8630;display:inline-block"></span>1-2 capturas</span>' +
+      '<span class="row" style="gap:5px"><span style="width:12px;height:12px;border-radius:50%;background:#d64545;display:inline-block"></span>3+ capturas</span>' +
+      '<span class="row" style="gap:5px"><span style="width:12px;height:12px;border-radius:50%;background:#9aa0a6;display:inline-block"></span>Sem leitura no app ainda</span>' +
+    '</div>'
+  );
+  app.appendChild(legenda);
+
+  const mapWrap = el('<div class="card" style="padding:0;overflow:hidden;position:relative;margin-top:10px"><p class="subtle" style="padding:16px">Carregando…</p></div>');
+  app.appendChild(mapWrap);
+
+  const detailWrap = el('<div class="card stack" id="detalheArmadilha" style="display:none;margin-top:10px"></div>');
+  app.appendChild(detailWrap);
+
+  async function load() {
+    mapWrap.innerHTML = '<p class="subtle" style="padding:16px">Carregando…</p>';
+    detailWrap.style.display = 'none';
+    const pontos = await api('getMapaCapturas', { unidade: S.unidade.UNIDADE, mapa: mapaAtual }).catch(function () { return []; });
+    mapWrap.innerHTML = '';
+
+    const container = el('<div style="position:relative;width:100%;line-height:0"></div>');
+    const img = el('<img src="assets/mapas/' + mapaAtual + '" style="width:100%;display:block" alt="Mapa">');
+    container.appendChild(img);
+    mapWrap.appendChild(container);
+
+    pontos.forEach(function (p) {
+      if (p.xPct === '' || p.xPct === null || p.xPct === undefined) return;
+      const cor = corMarcador(p.quantidade);
+      const marker = el(
+        '<button type="button" style="position:absolute;left:' + p.xPct + '%;top:' + p.yPct + '%;transform:translate(-50%,-50%);' +
+        'width:22px;height:22px;border-radius:50%;background:' + cor + ';border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.4);' +
+        'color:#fff;font-family:var(--mono);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0">' +
+        escapeHtml(p.armadilha) + '</button>'
+      );
+      marker.onclick = function () {
+        detailWrap.style.display = 'flex';
+        detailWrap.innerHTML =
+          '<div class="row between"><span class="list-item__title">Armadilha ' + escapeHtml(p.armadilha) + (p.tipo === 'ECOZONE' ? ' · ECOZONE' : '') + '</span>' +
+          '<span class="tag" style="background:' + cor + '22;color:' + cor + '">' + (p.quantidade === null ? 'Sem leitura' : p.quantidade + ' capturado(s)') + '</span></div>' +
+          (p.armazem ? '<div class="subtle">Armazém: ' + escapeHtml(p.armazem) + '</div>' : '') +
+          (p.dataUltimaCaptura ? '<div class="subtle">Última leitura: ' + escapeHtml(p.dataUltimaCaptura) + '</div>' : '<div class="subtle">Nenhuma captura registrada no app ainda para esta armadilha.</div>');
+        detailWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      };
+      container.appendChild(marker);
+    });
+  }
+  load();
 }
 
 async function renderDashCarunchos() {

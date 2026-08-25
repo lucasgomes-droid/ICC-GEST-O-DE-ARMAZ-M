@@ -1888,7 +1888,9 @@ async function renderResumoGeral() {
         kpi(d.avarias, 'Avarias') +
         kpi(d.goteiras, 'Goteiras') +
         kpi(d.riscoQuedaTombamento, 'Risco queda/tombamento') +
+        kpi(d.sujidades, 'Sujidades (checklist)') +
         kpi(d.capturasTotal, 'Carunchos capturados') +
+        kpi(d.diasSemCaptura, 'Dias c/ ronda sem captura') +
       '</div>'
     ));
 
@@ -1899,16 +1901,18 @@ async function renderResumoGeral() {
       : selPeriodo.value === 'mes' ? 'Este mês'
       : (range.dataInicial || '…') + ' até ' + (range.dataFinal || '…');
 
-    const btnPDF = el('<button class="btn btn--accent btn--block">📄 Baixar PDF</button>');
+    const btnPDF = el('<button class="btn btn--accent btn--block">📄 Baixar PDF (com gráficos e mapa)</button>');
     body.appendChild(btnPDF);
     btnPDF.onclick = async function () {
-      btnPDF.disabled = true; btnPDF.textContent = 'Gerando…';
+      btnPDF.disabled = true; btnPDF.textContent = 'Montando mapas…';
       try {
-        const resultado = await api('gerarResumoPDF', { unidade: S.unidade.UNIDADE, periodo: descricaoPeriodo, resumo: d });
+        const mapasImagens = await capturarImagensDosMapas();
+        btnPDF.textContent = 'Gerando PDF…';
+        const resultado = await api('gerarResumoPDF', { unidade: S.unidade.UNIDADE, periodo: descricaoPeriodo, resumo: d, mapasImagens: mapasImagens });
         downloadBase64File(resultado.filename, resultado.base64, 'application/pdf');
         toast('PDF gerado!', false, true);
       } catch (e) { /* toast já mostrado */ }
-      btnPDF.disabled = false; btnPDF.textContent = '📄 Baixar PDF';
+      btnPDF.disabled = false; btnPDF.textContent = '📄 Baixar PDF (com gráficos e mapa)';
     };
 
     body.appendChild(el(
@@ -1916,6 +1920,59 @@ async function renderResumoGeral() {
     ));
   }
   load();
+}
+
+// Desenha cada mapa (imagem base + marcadores coloridos, igual à tela de
+// Mapa de Capturas) num <canvas> escondido e exporta como PNG base64, para
+// embutir no PDF do jeito que aparece no app.
+async function capturarImagensDosMapas() {
+  const mapas = await api('getMapasDisponiveis', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const resultado = [];
+  for (const mapa of mapas) {
+    try {
+      const pontos = await api('getMapaCapturas', { unidade: S.unidade.UNIDADE, mapa: mapa });
+      const base64 = await desenharMapaEmCanvas('assets/mapas/' + mapa, pontos);
+      if (base64) resultado.push({ label: MAPA_LABEL[mapa] || mapa, base64: base64 });
+    } catch (e) { /* pula esse mapa se der erro */ }
+  }
+  return resultado;
+}
+
+function desenharMapaEmCanvas(srcImagem, pontos) {
+  return new Promise(function (resolve) {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = function () {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        pontos.forEach(function (p) {
+          if (p.xPct === '' || p.xPct === null || p.xPct === undefined) return;
+          const x = (p.xPct / 100) * canvas.width;
+          const y = (p.yPct / 100) * canvas.height;
+          const raio = Math.max(10, canvas.width * 0.014);
+          ctx.beginPath();
+          ctx.arc(x, y, raio, 0, Math.PI * 2);
+          ctx.fillStyle = corMarcador(p.quantidade);
+          ctx.fill();
+          ctx.lineWidth = Math.max(1.5, raio * 0.15);
+          ctx.strokeStyle = '#ffffff';
+          ctx.stroke();
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold ' + Math.round(raio * 0.9) + 'px Arial';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(String(p.armadilha), x, y);
+        });
+        resolve(canvas.toDataURL('image/png'));
+      } catch (e) { resolve(null); }
+    };
+    img.onerror = function () { resolve(null); };
+    img.src = srcImagem;
+  });
 }
 
 async function renderDashOcorrencias() {

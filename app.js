@@ -287,7 +287,7 @@ function textField(container, opts) {
   );
   container.appendChild(wrap);
   const input = wrap.querySelector(tag);
-  if (opts.value) input.value = opts.value;
+  if (opts.value !== undefined && opts.value !== null && opts.value !== '') input.value = opts.value;
   return { getValue: function () { return input.value.trim(); }, node: wrap };
 }
 
@@ -1391,20 +1391,79 @@ async function renderInspecaoDetalheAdmin() {
     det.ocorrencias.forEach(function (o) {
       const box = el(
         '<div class="stack" style="padding:10px 0;border-bottom:1px solid var(--line)">' +
-          '<strong>' + escapeHtml(o.TIPO) + '</strong>' +
-          '<p class="subtle">' + escapeHtml(o.DESCRICAO) + '</p>' +
+          '<div class="row between"><strong>' + escapeHtml(o.TIPO) + '</strong>' +
+          '<button type="button" class="btn btn--outline btn--sm" data-role="btnEditar">✏️ Editar</button></div>' +
+          '<p class="subtle" data-role="descricaoTexto">' + escapeHtml(o.DESCRICAO) + '</p>' +
+          (o.DESCRICAO_ORIGINAL ? '<p class="subtle" style="font-size:11.5px;color:var(--st-risco)">Original: ' + escapeHtml(o.DESCRICAO_ORIGINAL) + '</p>' : '') +
           (o.FOTO ? '<img class="photo-preview" src="' + escapeHtml(o.FOTO) + '">' : '') +
+          '<div data-role="editWrap" style="display:none"></div>' +
         '</div>'
       );
+      const btnEditar = box.querySelector('[data-role="btnEditar"]');
+      const textoAtual = box.querySelector('[data-role="descricaoTexto"]');
+      const editWrap = box.querySelector('[data-role="editWrap"]');
+      btnEditar.onclick = function () {
+        const aberto = editWrap.style.display !== 'none';
+        editWrap.style.display = aberto ? 'none' : 'flex';
+        editWrap.className = 'stack';
+        editWrap.innerHTML = '';
+        if (aberto) return;
+        const campo = textField(editWrap, { label: 'Corrigir descrição', multiline: true, value: o.DESCRICAO });
+        const btnSalvar = el('<button class="btn btn--primary btn--sm" style="align-self:flex-start">Salvar correção</button>');
+        editWrap.appendChild(btnSalvar);
+        btnSalvar.onclick = async function () {
+          const novaDescricao = campo.getValue();
+          if (!novaDescricao) { toast('A descrição não pode ficar vazia', true); return; }
+          btnSalvar.disabled = true; btnSalvar.textContent = 'Salvando…';
+          try {
+            await api('corrigirOcorrencia', { idOcorrenciaRegistro: o.ID_OCORRENCIA_REGISTRO, novaDescricao: novaDescricao, adminCorrigiu: S.usuario.NOME });
+            o.DESCRICAO_ORIGINAL = o.DESCRICAO_ORIGINAL || o.DESCRICAO;
+            o.DESCRICAO = novaDescricao;
+            textoAtual.textContent = novaDescricao;
+            editWrap.style.display = 'none';
+            toast('Descrição corrigida.', false, true);
+          } catch (e) { btnSalvar.disabled = false; btnSalvar.textContent = 'Salvar correção'; }
+        };
+      };
       card.appendChild(box);
     });
     det.capturas.forEach(function (c) {
-      card.appendChild(el(
+      const box = el(
         '<div class="stack" style="padding:10px 0;border-bottom:1px solid var(--line)">' +
-          '<strong>Captura — ' + escapeHtml(c.ARMADILHA) + '</strong>' +
-          '<p class="subtle">Quantidade: ' + escapeHtml(c.QUANTIDADE) + (c.BAIA ? ' · Baia: ' + escapeHtml(c.BAIA) : '') + '</p>' +
+          '<div class="row between"><strong>Captura — ' + escapeHtml(c.ARMADILHA) + '</strong>' +
+          '<button type="button" class="btn btn--outline btn--sm" data-role="btnEditar">✏️ Editar</button></div>' +
+          '<p class="subtle" data-role="qtdTexto">Quantidade: ' + escapeHtml(c.QUANTIDADE) + (c.BAIA ? ' · Baia: ' + escapeHtml(c.BAIA) : '') + '</p>' +
+          (c.QUANTIDADE_ORIGINAL !== undefined && c.QUANTIDADE_ORIGINAL !== '' ? '<p class="subtle" style="font-size:11.5px;color:var(--st-risco)">Quantidade original: ' + escapeHtml(c.QUANTIDADE_ORIGINAL) + '</p>' : '') +
+          '<div data-role="editWrap" style="display:none"></div>' +
         '</div>'
-      ));
+      );
+      const btnEditar = box.querySelector('[data-role="btnEditar"]');
+      const textoAtual = box.querySelector('[data-role="qtdTexto"]');
+      const editWrap = box.querySelector('[data-role="editWrap"]');
+      btnEditar.onclick = function () {
+        const aberto = editWrap.style.display !== 'none';
+        editWrap.style.display = aberto ? 'none' : 'flex';
+        editWrap.className = 'stack';
+        editWrap.innerHTML = '';
+        if (aberto) return;
+        const campo = textField(editWrap, { label: 'Corrigir quantidade', type: 'number', value: c.QUANTIDADE });
+        const btnSalvar = el('<button class="btn btn--primary btn--sm" style="align-self:flex-start">Salvar correção</button>');
+        editWrap.appendChild(btnSalvar);
+        btnSalvar.onclick = async function () {
+          const novaQuantidade = campo.getValue();
+          if (novaQuantidade === '') { toast('Informe a quantidade', true); return; }
+          btnSalvar.disabled = true; btnSalvar.textContent = 'Salvando…';
+          try {
+            await api('corrigirCaptura', { idCaptura: c.ID_CAPTURA, novaQuantidade: Number(novaQuantidade), adminCorrigiu: S.usuario.NOME });
+            c.QUANTIDADE_ORIGINAL = (c.QUANTIDADE_ORIGINAL !== undefined && c.QUANTIDADE_ORIGINAL !== '') ? c.QUANTIDADE_ORIGINAL : c.QUANTIDADE;
+            c.QUANTIDADE = novaQuantidade;
+            textoAtual.textContent = 'Quantidade: ' + novaQuantidade + (c.BAIA ? ' · Baia: ' + c.BAIA : '');
+            editWrap.style.display = 'none';
+            toast('Quantidade corrigida.', false, true);
+          } catch (e) { btnSalvar.disabled = false; btnSalvar.textContent = 'Salvar correção'; }
+        };
+      };
+      card.appendChild(box);
     });
   } else {
     card.appendChild(el('<p class="subtle">Nenhuma ocorrência ou captura registrada nesta inspeção.</p>'));
@@ -1834,6 +1893,23 @@ async function renderResumoGeral() {
     ));
 
     body.appendChild(barCard('Rondas por conferente', d.porConferente));
+
+    const descricaoPeriodo = selPeriodo.value === 'tudo' ? 'Todo o período'
+      : selPeriodo.value === 'semana' ? 'Esta semana'
+      : selPeriodo.value === 'mes' ? 'Este mês'
+      : (range.dataInicial || '…') + ' até ' + (range.dataFinal || '…');
+
+    const btnPDF = el('<button class="btn btn--accent btn--block">📄 Baixar PDF</button>');
+    body.appendChild(btnPDF);
+    btnPDF.onclick = async function () {
+      btnPDF.disabled = true; btnPDF.textContent = 'Gerando…';
+      try {
+        const resultado = await api('gerarResumoPDF', { unidade: S.unidade.UNIDADE, periodo: descricaoPeriodo, resumo: d });
+        downloadBase64File(resultado.filename, resultado.base64, 'application/pdf');
+        toast('PDF gerado!', false, true);
+      } catch (e) { /* toast já mostrado */ }
+      btnPDF.disabled = false; btnPDF.textContent = '📄 Baixar PDF';
+    };
 
     body.appendChild(el(
       '<p class="subtle" style="text-align:center">Quer o detalhe de cada tipo? Veja "Ocorrências da inspeção", "Dashboard de carunchos" ou "Dashboard de limpeza" no menu.</p>'

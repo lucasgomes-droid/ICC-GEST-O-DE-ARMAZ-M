@@ -346,6 +346,7 @@ function render() {
     dashOcorrencias: renderDashOcorrencias,
     manutencoes: renderManutencoes,
     mapaCapturas: renderMapaCapturas,
+    resumoGeral: renderResumoGeral,
     manutencaoDetalhe: renderManutencaoDetalhe,
     relatorios: renderRelatorios,
     relatorioDetalhe: renderRelatorioDetalhe,
@@ -1298,6 +1299,7 @@ function renderAdminHome() {
     screenHeader('Área administrativa', 'Olá, ' + S.usuario.NOME) +
     '<div class="stack">' +
       menuCard('📅', 'Painel do dia', 'Quais armazéns ainda não fizeram inspeção/limpeza hoje', 'dashInspecoes') +
+      menuCard('📊', 'Resumo geral', 'Rondas, checklists, capturas e ocorrências — igual ao relatório semanal', 'resumoGeral') +
       menuCard('📄', 'Relatórios', 'Baixar relatórios em CSV (Excel/Sheets)', 'relatorios') +
       menuCard('✅', 'Validação de inspeções', 'Revisar inspeções dos conferentes', 'validacaoInspecoes') +
       menuCard('➕', 'Registrar pendência', 'Abrir uma pendência manualmente', 'registrarPendencia') +
@@ -1753,6 +1755,91 @@ function downloadBase64File(filename, base64, mime) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+async function renderResumoGeral() {
+  appendHtml(app, screenHeader('Resumo geral', S.unidade.UNIDADE, 'Os mesmos números do relatório semanal, num lugar só'));
+
+  const filterWrap = el(
+    '<div class="filters">' +
+      '<select id="fPeriodo">' +
+        '<option value="semana">Esta semana</option>' +
+        '<option value="mes">Este mês</option>' +
+        '<option value="tudo">Todo o período</option>' +
+        '<option value="custom">Período personalizado</option>' +
+      '</select>' +
+      '<select id="fArmazem"><option value="">Todos os armazéns</option></select>' +
+    '</div>'
+  );
+  app.appendChild(filterWrap);
+  const customWrap = el(
+    '<div class="filters" id="customDates" style="display:none">' +
+      '<input type="date" id="fDataInicial">' +
+      '<input type="date" id="fDataFinal">' +
+      '<button class="btn btn--outline btn--sm" id="btnAplicar">Aplicar</button>' +
+    '</div>'
+  );
+  app.appendChild(customWrap);
+
+  const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
+  app.appendChild(body);
+
+  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const selArmazem = document.getElementById('fArmazem');
+  armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
+
+  const selPeriodo = document.getElementById('fPeriodo');
+  const customDates = document.getElementById('customDates');
+  selPeriodo.onchange = function () {
+    customDates.style.display = selPeriodo.value === 'custom' ? 'flex' : 'none';
+    if (selPeriodo.value !== 'custom') load();
+  };
+  document.getElementById('btnAplicar').onclick = load;
+  selArmazem.onchange = load;
+
+  async function load() {
+    body.innerHTML = '<p class="subtle">Carregando…</p>';
+    let range = { dataInicial: '', dataFinal: '' };
+    if (selPeriodo.value === 'custom') {
+      const ini = document.getElementById('fDataInicial').value;
+      const fim = document.getElementById('fDataFinal').value;
+      if (ini) range.dataInicial = dateToBR(new Date(ini + 'T00:00:00'));
+      if (fim) range.dataFinal = dateToBR(new Date(fim + 'T00:00:00'));
+    } else {
+      range = periodoRange(selPeriodo.value);
+    }
+    const d = await api('getResumoGeral', {
+      unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
+      dataInicial: range.dataInicial, dataFinal: range.dataFinal
+    }).catch(function () { return null; });
+    body.innerHTML = '';
+    if (!d) return;
+
+    const totalApontamentos = d.avarias + d.goteiras + d.riscoQuedaTombamento;
+    body.appendChild(el(
+      '<div class="card stack">' +
+        '<p class="subtle" style="margin:0">' + escapeHtml(d.armazensComRonda) + ' armazém(ns) com ronda · <strong style="color:var(--ink)">' + escapeHtml(d.totalInspecoes) + ' rondas</strong> · <strong style="color:var(--st-risco)">' + totalApontamentos + ' apontamentos</strong></p>' +
+      '</div>'
+    ));
+
+    body.appendChild(el(
+      '<div class="kpi-grid">' +
+        kpi(d.totalInspecoes, 'Inspeções (rondas)') +
+        kpi(d.totalChecklists, 'Checklists realizados') +
+        kpi(d.avarias, 'Avarias') +
+        kpi(d.goteiras, 'Goteiras') +
+        kpi(d.riscoQuedaTombamento, 'Risco queda/tombamento') +
+        kpi(d.capturasTotal, 'Carunchos capturados') +
+      '</div>'
+    ));
+
+    body.appendChild(barCard('Rondas por conferente', d.porConferente));
+
+    body.appendChild(el(
+      '<p class="subtle" style="text-align:center">Quer o detalhe de cada tipo? Veja "Ocorrências da inspeção", "Dashboard de carunchos" ou "Dashboard de limpeza" no menu.</p>'
+    ));
+  }
+  load();
 }
 
 async function renderDashOcorrencias() {

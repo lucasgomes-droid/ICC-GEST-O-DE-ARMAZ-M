@@ -7,6 +7,14 @@
 // >>> COLE AQUI A URL DO SEU APPS SCRIPT WEB APP <<<
 const API_URL = 'https://script.google.com/macros/s/AKfycbyiJF13w6pN6irRpkyKNu_ACFB4it9lTjmcLsE_84MTsehYjJcFdCCHKhxL8v2Mefcu/exec';
 
+// Registra o service worker — necessário para o Android/Chrome oferecer
+// a opção de instalar o site como app (ícone na tela + sem barra de endereço).
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('sw.js').catch(function () { /* PWA é bônus, não trava o app se falhar */ });
+  });
+}
+
 const OCORRENCIA_STATUS_LABEL = {
   ABERTA: { label: 'Aberta', cls: 'aberta' },
   EM_TRATAMENTO: { label: 'Em tratamento', cls: 'tratamento' },

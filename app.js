@@ -353,6 +353,7 @@ function render() {
     dashInspecoes: renderDashInspecoes,
     dashOcorrencias: renderDashOcorrencias,
     manutencoes: renderManutencoes,
+    manutencoesConferente: renderManutencoesConferente,
     mapaCapturas: renderMapaCapturas,
     resumoGeral: renderResumoGeral,
     manutencaoDetalhe: renderManutencaoDetalhe,
@@ -521,6 +522,7 @@ function renderConferenteHome() {
       menuCard('🔎', 'Inspeção dos galpões', 'Registrar uma nova inspeção', 'inspecao') +
       menuCard('🧹', 'Checklist de limpeza', 'Diário, semanal, mensal ou anual', 'checklist') +
       menuCard('📋', 'Minhas pendências', 'Ver e resolver pendências direcionadas a você', 'minhasPendencias') +
+      menuCard('🔧', 'Manutenções', 'Acompanhar o andamento das manutenções da unidade', 'manutencoesConferente') +
       menuCard('🕘', 'Histórico', 'Suas inspeções e checklists anteriores', 'historico') +
     '</div>'
   );
@@ -962,10 +964,29 @@ function renderChecklist() {
     app.appendChild(el(screenHeader('Checklist · ' + w.periodicidade, 'Selecione o armazém')));
     const card = el('<div class="card stack" id="list"><p class="subtle">Carregando…</p></div>');
     app.appendChild(card);
-    api('getArmazens', { unidade: S.unidade.UNIDADE }).then(function (armazens) {
+
+    const buscaArmazens = api('getArmazens', { unidade: S.unidade.UNIDADE });
+    const buscaProximos = w.periodicidade !== 'DIARIO'
+      ? api('getProximosChecklists', { unidade: S.unidade.UNIDADE, periodicidade: w.periodicidade }).catch(function () { return []; })
+      : Promise.resolve([]);
+
+    Promise.all([buscaArmazens, buscaProximos]).then(function (results) {
+      const armazens = results[0], proximos = results[1];
+      const proximosPorArmazem = {};
+      proximos.forEach(function (p) { proximosPorArmazem[p.armazem] = p; });
+
       card.innerHTML = '';
       armazens.forEach(function (a) {
-        const b = el('<button type="button" class="list-item" style="width:100%"><span class="list-item__title">' + escapeHtml(a.ARMAZEM) + '</span><span>›</span></button>');
+        const prox = proximosPorArmazem[a.ARMAZEM];
+        let sub = '';
+        if (prox) {
+          if (prox.proximaData) {
+            sub = '<div class="list-item__sub" style="' + (prox.atrasado ? 'color:var(--st-risco);font-weight:600' : '') + '">Próximo checklist: ' + escapeHtml(prox.proximaData) + (prox.atrasado ? ' (atrasado)' : '') + '</div>';
+          } else {
+            sub = '<div class="list-item__sub">Ainda não tem checklist ' + w.periodicidade.toLowerCase() + ' registrado</div>';
+          }
+        }
+        const b = el('<button type="button" class="list-item" style="width:100%"><span><span class="list-item__title">' + escapeHtml(a.ARMAZEM) + '</span>' + sub + '</span><span>›</span></button>');
         b.onclick = function () { w.armazem = a.ARMAZEM; w.step = 'itens'; render(); };
         card.appendChild(b);
       });
@@ -996,6 +1017,31 @@ function renderChecklist() {
             item: it.item, especial: true,
             validate: balanca.validate,
             build: function () { return { item: it.item, resultado: balanca.getResultado(), observacao: balanca.getObservacao(), foto: balanca.getFoto() }; }
+          };
+        }
+
+        if (it.tipo === 'SUJIDADE') {
+          const yn = yesNoField(box, 'Foi identificada sujidade?');
+          const sub = el('<div class="stack" style="display:none"></div>');
+          box.appendChild(sub);
+          let obsField = null, fotoField = null;
+          yn.node.addEventListener('change', function () {
+            const val = yn.getValue();
+            sub.style.display = val ? 'flex' : 'none';
+            sub.innerHTML = '';
+            obsField = null; fotoField = null;
+            if (val) {
+              obsField = textField(sub, { label: 'Observação (opcional)', multiline: true });
+              fotoField = photoField(sub, { label: 'Foto da sujidade', required: true });
+            }
+          });
+          return {
+            item: it.item, especial: true,
+            validate: function () { return yn.getValue() !== null && (!yn.getValue() || (fotoField && !!fotoField.getValue())); },
+            build: function () {
+              const houve = yn.getValue();
+              return { item: it.item, resultado: houve ? 'SUJIDADE' : 'OK', observacao: houve && obsField ? obsField.getValue() : '', foto: houve && fotoField ? fotoField.getValue() : '' };
+            }
           };
         }
 
@@ -2115,8 +2161,10 @@ async function renderManutencoes() {
     '<div class="filters">' +
       '<select id="fStatus">' +
         '<option value="">Todos os status</option>' +
-        '<option value="PENDENTE">Pendente</option>' +
-        '<option value="CONCLUIDA">Concluída</option>' +
+        '<option value="NAO_INICIADO">Não iniciado</option>' +
+        '<option value="EM_ANDAMENTO">Em andamento</option>' +
+        '<option value="AGUARDANDO_APROVACAO">Aguardando aprovação</option>' +
+        '<option value="FINALIZADA">Finalizada</option>' +
       '</select>' +
       '<select id="fArmazem"><option value="">Todos os armazéns</option></select>' +
     '</div>'
@@ -2140,7 +2188,7 @@ async function renderManutencoes() {
     if (!d) return;
 
     body.appendChild(el(
-      '<div class="kpi-grid">' + kpi(d.pendentes, 'Pendentes') + kpi(d.concluidas, 'Concluídas') + kpi(d.total, 'Total') + '</div>'
+      '<div class="kpi-grid">' + kpi(d.naoIniciadas, 'Não iniciadas') + kpi(d.emAndamento, 'Em andamento') + kpi(d.aguardandoAprovacao, 'Aguard. aprovação') + kpi(d.concluidas, 'Finalizadas') + '</div>'
     ));
     body.appendChild(barCard('Por armazém', d.porArmazem));
     body.appendChild(barCard('Por tipo', d.porTipo));
@@ -2150,7 +2198,8 @@ async function renderManutencoes() {
     body.appendChild(listCard);
     if (!lista.length) { listCard.appendChild(el('<p class="subtle">Nenhuma manutenção encontrada.</p>')); return; }
     lista.forEach(function (m) {
-      const tag = m.STATUS === 'CONCLUIDA' ? '<span class="tag tag--finalizada">Concluída</span>' : '<span class="tag tag--aberta">Pendente</span>';
+      const info = MANUTENCAO_STATUS[m.STATUS] || { label: m.STATUS, cls: 'aberta' };
+      const tag = '<span class="tag tag--' + info.cls + '">' + info.label + '</span>';
       const item = el(
         '<button type="button" class="list-item" style="width:100%">' +
           '<span><span class="shiplabel">' + escapeHtml(m.ID_MANUTENCAO) + '</span>' +
@@ -2166,6 +2215,56 @@ async function renderManutencoes() {
   load();
 }
 
+// Tela do conferente: acompanhamento (leitura) de todas as manutenções da
+// unidade, de qualquer armazém — mantendo o isolamento por unidade. Some
+// da lista assim que vira Finalizada.
+async function renderManutencoesConferente() {
+  app.appendChild(el(screenHeader('Manutenções', 'Andamento na unidade ' + S.unidade.UNIDADE)));
+
+  const filterWrap = el(
+    '<div class="filters">' +
+      '<select id="fStatus">' +
+        '<option value="">Todas ativas</option>' +
+        '<option value="NAO_INICIADO">Não iniciado</option>' +
+        '<option value="EM_ANDAMENTO">Em andamento</option>' +
+        '<option value="AGUARDANDO_APROVACAO">Aguardando aprovação</option>' +
+      '</select>' +
+    '</div>'
+  );
+  app.appendChild(filterWrap);
+  const listWrap = el('<div class="stack" id="list" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
+  app.appendChild(listWrap);
+
+  const selStatus = document.getElementById('fStatus');
+  selStatus.onchange = load;
+
+  async function load() {
+    listWrap.innerHTML = '<p class="subtle">Carregando…</p>';
+    const lista = await api('getManutencoes', { unidade: S.unidade.UNIDADE, status: selStatus.value, apenasAtivas: true }).catch(function () { return []; });
+    listWrap.innerHTML = '';
+    if (!lista.length) { listWrap.appendChild(el('<div class="empty"><span class="ic">🔧</span>Nenhuma manutenção em andamento.</div>')); return; }
+    lista.forEach(function (m) {
+      const info = MANUTENCAO_STATUS[m.STATUS] || { label: m.STATUS, cls: 'aberta' };
+      const item = el(
+        '<div class="list-item" style="cursor:default"><span><span class="shiplabel">' + escapeHtml(m.ID_MANUTENCAO) + '</span>' +
+          '<div class="list-item__title" style="margin-top:6px">' + escapeHtml(m.TIPO) + ' — ' + escapeHtml(m.ARMAZEM) + '</div>' +
+          '<div class="list-item__sub">' + escapeHtml(m.LOCAL) + ' · registrado por ' + escapeHtml(m.CONFERENTE) + '</div></span>' +
+          '<span class="tag tag--' + info.cls + '">' + info.label + '</span>' +
+        '</div>'
+      );
+      listWrap.appendChild(item);
+    });
+  }
+  load();
+}
+
+const MANUTENCAO_STATUS = {
+  NAO_INICIADO: { label: 'Não iniciado', cls: 'aberta' },
+  EM_ANDAMENTO: { label: 'Em andamento', cls: 'tratamento' },
+  AGUARDANDO_APROVACAO: { label: 'Aguardando aprovação', cls: 'validacao' },
+  FINALIZADA: { label: 'Finalizada', cls: 'finalizada' }
+};
+
 function renderManutencaoDetalhe() {
   const m = S.manutencaoAtual;
   appendHtml(app,
@@ -2176,7 +2275,8 @@ function renderManutencaoDetalhe() {
 
   const card = el('<div class="card stack"></div>');
   app.appendChild(card);
-  const tag = m.STATUS === 'CONCLUIDA' ? '<span class="tag tag--finalizada">Concluída</span>' : '<span class="tag tag--aberta">Pendente</span>';
+  const statusInfo = MANUTENCAO_STATUS[m.STATUS] || { label: m.STATUS, cls: 'aberta' };
+  const tag = '<span class="tag tag--' + statusInfo.cls + '">' + statusInfo.label + '</span>';
   card.appendChild(el('<div class="row between"><span class="subtle">Status</span>' + tag + '</div>'));
   card.appendChild(el('<div class="row between"><span class="subtle">Armazém</span><strong>' + escapeHtml(m.ARMAZEM) + '</strong></div>'));
   card.appendChild(el('<div class="row between"><span class="subtle">Local</span><strong>' + escapeHtml(m.LOCAL) + '</strong></div>'));
@@ -2186,29 +2286,54 @@ function renderManutencaoDetalhe() {
   card.appendChild(el('<p><strong>Descrição</strong><br>' + escapeHtml(m.DESCRICAO || '—') + '</p>'));
   if (m.FOTO) card.appendChild(el('<img class="photo-preview" src="' + m.FOTO + '">'));
 
-  if (m.STATUS === 'PENDENTE') {
-    const concluirWrap = el('<div class="card stack"><h3 class="title-lg">Concluir manutenção</h3></div>');
-    app.appendChild(concluirWrap);
-    const desc = textField(concluirWrap, { label: 'O que foi feito? *', multiline: true });
-    const foto = photoField(concluirWrap, { label: 'Foto de comprovação', required: true });
-    const btn = el('<button class="btn btn--primary btn--block">Marcar como concluída</button>');
-    concluirWrap.appendChild(btn);
-    btn.onclick = async function () {
-      if (!desc.getValue()) { toast('Descreva o que foi feito', true); return; }
-      if (!foto.getValue()) { toast('A foto de comprovação é obrigatória', true); return; }
-      btn.disabled = true; btn.textContent = 'Enviando…';
-      try {
-        await api('concluirManutencao', { idManutencao: m.ID_MANUTENCAO, descricaoConclusao: desc.getValue(), fotoConclusao: foto.getValue() });
-        toast('Manutenção concluída!', false, true);
-        go('manutencoes');
-      } catch (e) { btn.disabled = false; btn.textContent = 'Marcar como concluída'; }
-    };
-  } else {
+  if (m.STATUS === 'FINALIZADA') {
     card.appendChild(el('<div class="divider"></div>'));
     card.appendChild(el('<p><strong>O que foi feito</strong><br>' + escapeHtml(m.DESCRICAO_CONCLUSAO || '—') + '</p>'));
     if (m.FOTO_CONCLUSAO) card.appendChild(el('<img class="photo-preview" src="' + m.FOTO_CONCLUSAO + '">'));
     card.appendChild(el('<div class="row between"><span class="subtle">Concluída em</span><strong>' + escapeHtml(m.DATA_CONCLUSAO) + '</strong></div>'));
+    return;
   }
+
+  // Só o admin muda o status — o conferente só acompanha (tela somente leitura).
+  if (S.usuario.TIPO !== 'ADMIN') return;
+
+  const statusWrap = el('<div class="card stack"><h3 class="title-lg">Atualizar status</h3></div>');
+  app.appendChild(statusWrap);
+  const row = el('<div class="option-grid" style="grid-template-columns:1fr 1fr"></div>');
+  statusWrap.appendChild(row);
+
+  ['NAO_INICIADO', 'EM_ANDAMENTO', 'AGUARDANDO_APROVACAO'].forEach(function (st) {
+    if (st === m.STATUS) return; // não mostra o status atual como opção
+    const info = MANUTENCAO_STATUS[st];
+    const btn = el('<button type="button" class="option-btn">' + info.label + '</button>');
+    btn.onclick = async function () {
+      btn.disabled = true;
+      try {
+        await api('atualizarStatusManutencao', { idManutencao: m.ID_MANUTENCAO, status: st });
+        toast('Status atualizado para "' + info.label + '".', false, true);
+        go('manutencoes');
+      } catch (e) { btn.disabled = false; }
+    };
+    row.appendChild(btn);
+  });
+
+  // Finalizar exige descrição + foto de comprovação
+  const finalizarWrap = el('<div class="card stack"><h3 class="title-lg">Finalizar manutenção</h3></div>');
+  app.appendChild(finalizarWrap);
+  const desc = textField(finalizarWrap, { label: 'O que foi feito? *', multiline: true });
+  const foto = photoField(finalizarWrap, { label: 'Foto de comprovação', required: true });
+  const btnFinalizar = el('<button class="btn btn--primary btn--block">✓ Marcar como finalizada</button>');
+  finalizarWrap.appendChild(btnFinalizar);
+  btnFinalizar.onclick = async function () {
+    if (!desc.getValue()) { toast('Descreva o que foi feito', true); return; }
+    if (!foto.getValue()) { toast('A foto de comprovação é obrigatória', true); return; }
+    btnFinalizar.disabled = true; btnFinalizar.textContent = 'Enviando…';
+    try {
+      await api('atualizarStatusManutencao', { idManutencao: m.ID_MANUTENCAO, status: 'FINALIZADA', descricaoConclusao: desc.getValue(), fotoConclusao: foto.getValue() });
+      toast('Manutenção finalizada!', false, true);
+      go('manutencoes');
+    } catch (e) { btnFinalizar.disabled = false; btnFinalizar.textContent = '✓ Marcar como finalizada'; }
+  };
 }
 
 // ------------------------- MAPA DE CAPTURAS -------------------------

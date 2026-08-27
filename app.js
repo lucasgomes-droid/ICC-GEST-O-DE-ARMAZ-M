@@ -158,6 +158,29 @@ function toast(msg, isError, isSuccess) {
   t._timer = setTimeout(function () { t.className = 'toast'; }, 3200);
 }
 
+// Renderiza uma lista longa em páginas de N itens, com botão "Carregar
+// mais" no final — evita travar a tela quando acumula muitos registros.
+// renderItem(item) deve devolver um elemento pronto pra ser anexado.
+function renderPaginado(container, items, renderItem, pageSize) {
+  pageSize = pageSize || 20;
+  let shown = 0;
+  const btnWrap = el('<div style="text-align:center;margin-top:8px"></div>');
+
+  function loadMore() {
+    const next = items.slice(shown, shown + pageSize);
+    next.forEach(function (item) { container.insertBefore(renderItem(item), btnWrap); });
+    shown += next.length;
+    btnWrap.innerHTML = '';
+    if (shown < items.length) {
+      const btn = el('<button class="btn btn--outline btn--sm">Carregar mais (' + shown + ' de ' + items.length + ')</button>');
+      btn.onclick = loadMore;
+      btnWrap.appendChild(btn);
+    }
+  }
+  container.appendChild(btnWrap);
+  loadMore();
+}
+
 function el(html) {
   const div = document.createElement('div');
   div.innerHTML = html.trim();
@@ -1152,7 +1175,7 @@ async function renderMinhasPendencias() {
 function renderPendenciasList(wrap, pend, onOpen) {
   wrap.innerHTML = '';
   if (!pend.length) { wrap.appendChild(el('<div class="empty"><span class="ic">📭</span>Nenhuma pendência encontrada.</div>')); return; }
-  pend.forEach(function (p) {
+  renderPaginado(wrap, pend, function (p) {
     const st = OCORRENCIA_STATUS_LABEL[p.STATUS] || { label: p.STATUS, cls: 'aberta' };
     const item = el(
       '<button type="button" class="list-item" style="width:100%">' +
@@ -1163,7 +1186,7 @@ function renderPendenciasList(wrap, pend, onOpen) {
       '</button>'
     );
     item.onclick = function () { onOpen(p); };
-    wrap.appendChild(item);
+    return item;
   });
 }
 
@@ -1315,23 +1338,23 @@ async function renderHistorico() {
     listWrap.innerHTML = '';
     const filtradas = data.inspecoes.filter(function (i) { return dentroDoPeriodo(i.DATA); });
     if (!filtradas.length) { listWrap.appendChild(el('<div class="empty"><span class="ic">🔎</span>Nenhuma inspeção encontrada nesse período.</div>')); return; }
-    filtradas.slice().reverse().forEach(function (i) {
-      listWrap.appendChild(el(
+    renderPaginado(listWrap, filtradas.slice().reverse(), function (i) {
+      return el(
         '<div class="list-item" style="cursor:default"><span><span class="shiplabel">' + escapeHtml(i.ID_INSPECAO) + '</span>' +
         '<div class="list-item__title" style="margin-top:6px">' + escapeHtml(i.ARMAZEM) + '</div>' +
         '<div class="list-item__sub">' + escapeHtml(i.DATA) + ' ' + escapeHtml(i.HORA) + '</div></span></div>'
-      ));
+      );
     });
   }
   function showChecklists() {
     listWrap.innerHTML = '';
     const filtrados = data.checklists.filter(function (c) { return dentroDoPeriodo(c.DATA); });
     if (!filtrados.length) { listWrap.appendChild(el('<div class="empty"><span class="ic">🧹</span>Nenhum checklist encontrado nesse período.</div>')); return; }
-    filtrados.slice().reverse().forEach(function (c) {
-      listWrap.appendChild(el(
+    renderPaginado(listWrap, filtrados.slice().reverse(), function (c) {
+      return el(
         '<div class="list-item" style="cursor:default"><span><span class="list-item__title">' + escapeHtml(c.ARMAZEM) + ' — ' + escapeHtml(c.ITEM) + '</span>' +
         '<div class="list-item__sub">' + escapeHtml(c.PERIODICIDADE) + ' · ' + escapeHtml(c.DATA) + ' · ' + escapeHtml(c.RESULTADO) + '</div></span></div>'
-      ));
+      );
     });
   }
   function refresh() { abaAtiva === 'inspecoes' ? showInspecoes() : showChecklists(); }
@@ -1397,7 +1420,7 @@ async function renderValidacaoInspecoes() {
     const rows = await api('getInspecoes', { unidade: S.unidade.UNIDADE, armazem: selArm.value, status: document.getElementById('fResultado').value, apenasComOcorrencias: true }).catch(function () { return []; });
     listWrap.innerHTML = '';
     if (!rows.length) { listWrap.appendChild(el('<div class="empty"><span class="ic">🔎</span>Nenhuma inspeção com registros encontrada.</div>')); return; }
-    rows.forEach(function (i) {
+    renderPaginado(listWrap, rows, function (i) {
       const resumo = '<div class="list-item__sub" style="color:var(--st-risco);font-weight:600;margin-top:2px">⚠ ' + escapeHtml(i.RESUMO_OCORRENCIAS) + '</div>';
       const item = el(
         '<button type="button" class="list-item" style="width:100%">' +
@@ -1409,7 +1432,7 @@ async function renderValidacaoInspecoes() {
         '</button>'
       );
       item.onclick = function () { go('inspecaoDetalheAdmin', { inspecaoAtual: i }); };
-      listWrap.appendChild(item);
+      return item;
     });
   }
   selArm.onchange = load;
@@ -2205,7 +2228,7 @@ async function renderManutencoes() {
     const listCard = el('<div class="card stack"><h3 class="title-lg">Lista de manutenções</h3></div>');
     body.appendChild(listCard);
     if (!lista.length) { listCard.appendChild(el('<p class="subtle">Nenhuma manutenção encontrada.</p>')); return; }
-    lista.forEach(function (m) {
+    renderPaginado(listCard, lista, function (m) {
       const info = MANUTENCAO_STATUS[m.STATUS] || { label: m.STATUS, cls: 'aberta' };
       const tag = '<span class="tag tag--' + info.cls + '">' + info.label + '</span>';
       const item = el(
@@ -2217,7 +2240,7 @@ async function renderManutencoes() {
         '</button>'
       );
       item.onclick = function () { go('manutencaoDetalhe', { manutencaoAtual: m }); };
-      listCard.appendChild(item);
+      return item;
     });
   }
   load();
@@ -2251,16 +2274,17 @@ async function renderManutencoesConferente() {
     const lista = await api('getManutencoes', { unidade: S.unidade.UNIDADE, status: selStatus.value, apenasAtivas: true }).catch(function () { return []; });
     listWrap.innerHTML = '';
     if (!lista.length) { listWrap.appendChild(el('<div class="empty"><span class="ic">🔧</span>Nenhuma manutenção em andamento.</div>')); return; }
-    lista.forEach(function (m) {
+    renderPaginado(listWrap, lista, function (m) {
       const info = MANUTENCAO_STATUS[m.STATUS] || { label: m.STATUS, cls: 'aberta' };
       const item = el(
-        '<div class="list-item" style="cursor:default"><span><span class="shiplabel">' + escapeHtml(m.ID_MANUTENCAO) + '</span>' +
+        '<button type="button" class="list-item" style="width:100%"><span><span class="shiplabel">' + escapeHtml(m.ID_MANUTENCAO) + '</span>' +
           '<div class="list-item__title" style="margin-top:6px">' + escapeHtml(m.TIPO) + ' — ' + escapeHtml(m.ARMAZEM) + '</div>' +
           '<div class="list-item__sub">' + escapeHtml(m.LOCAL) + ' · registrado por ' + escapeHtml(m.CONFERENTE) + '</div></span>' +
           '<span class="tag tag--' + info.cls + '">' + info.label + '</span>' +
-        '</div>'
+        '</button>'
       );
-      listWrap.appendChild(item);
+      item.onclick = function () { go('manutencaoDetalhe', { manutencaoAtual: m }); };
+      return item;
     });
   }
   load();
@@ -2273,13 +2297,13 @@ const MANUTENCAO_STATUS = {
   FINALIZADA: { label: 'Finalizada', cls: 'finalizada' }
 };
 
-function renderManutencaoDetalhe() {
+async function renderManutencaoDetalhe() {
   const m = S.manutencaoAtual;
   appendHtml(app,
     screenHeader('Manutenção ' + m.ID_MANUTENCAO, m.TIPO) +
     '<button class="btn btn--outline btn--sm" id="btnVoltar" style="align-self:flex-start;margin-top:-8px">← Voltar</button>'
   );
-  document.getElementById('btnVoltar').onclick = function () { go('manutencoes'); };
+  document.getElementById('btnVoltar').onclick = function () { go(S.usuario.TIPO === 'ADMIN' ? 'manutencoes' : 'manutencoesConferente'); };
 
   const card = el('<div class="card stack"></div>');
   app.appendChild(card);
@@ -2288,19 +2312,47 @@ function renderManutencaoDetalhe() {
   card.appendChild(el('<div class="row between"><span class="subtle">Status</span>' + tag + '</div>'));
   card.appendChild(el('<div class="row between"><span class="subtle">Armazém</span><strong>' + escapeHtml(m.ARMAZEM) + '</strong></div>'));
   card.appendChild(el('<div class="row between"><span class="subtle">Local</span><strong>' + escapeHtml(m.LOCAL) + '</strong></div>'));
-  card.appendChild(el('<div class="row between"><span class="subtle">Registrado por</span><strong>' + escapeHtml(m.CONFERENTE) + '</strong></div>'));
-  card.appendChild(el('<div class="row between"><span class="subtle">Data de abertura</span><strong>' + escapeHtml(m.DATA_ABERTURA) + '</strong></div>'));
-  card.appendChild(el('<div class="divider"></div>'));
-  card.appendChild(el('<p><strong>Descrição</strong><br>' + escapeHtml(m.DESCRICAO || '—') + '</p>'));
-  if (m.FOTO) card.appendChild(el('<img class="photo-preview" src="' + m.FOTO + '">'));
 
-  if (m.STATUS === 'FINALIZADA') {
-    card.appendChild(el('<div class="divider"></div>'));
-    card.appendChild(el('<p><strong>O que foi feito</strong><br>' + escapeHtml(m.DESCRICAO_CONCLUSAO || '—') + '</p>'));
-    if (m.FOTO_CONCLUSAO) card.appendChild(el('<img class="photo-preview" src="' + m.FOTO_CONCLUSAO + '">'));
-    card.appendChild(el('<div class="row between"><span class="subtle">Concluída em</span><strong>' + escapeHtml(m.DATA_CONCLUSAO) + '</strong></div>'));
-    return;
-  }
+  // ---- Linha do tempo: abertura, cada retorno do admin, e finalização ----
+  const timelineWrap = el('<div class="card stack"><h3 class="title-lg">Linha do tempo</h3><p class="subtle" id="tlLoading">Carregando…</p></div>');
+  app.appendChild(timelineWrap);
+  const TIPO_INFO = {
+    ABERTURA: { label: 'Abertura', quem: 'Conferente', dot: '#5e9030' },
+    RETORNO: { label: 'Retorno', quem: 'Admin', dot: '#df8630' },
+    FINALIZACAO: { label: 'Finalização', quem: 'Admin', dot: '#9aa0a6' }
+  };
+  api('getHistoricoManutencao', { idManutencao: m.ID_MANUTENCAO }).then(function (historico) {
+    document.getElementById('tlLoading').remove();
+    // Registros antigos (antes dessa funcionalidade existir) não têm a
+    // entrada de ABERTURA na aba de histórico — reconstrói a partir dos
+    // dados que já existiam na manutenção, pra linha do tempo não ficar vazia.
+    if (!historico.some(function (h) { return h.TIPO === 'ABERTURA'; })) {
+      historico.unshift({ TIPO: 'ABERTURA', AUTOR: m.CONFERENTE, DATA: m.DATA_ABERTURA, STATUS_NOVO: 'NAO_INICIADO', COMENTARIO: m.DESCRICAO, FOTO: m.FOTO });
+    }
+    historico.forEach(function (h, i) {
+      const info = TIPO_INFO[h.TIPO] || { label: h.TIPO, quem: '', dot: '#9aa0a6' };
+      const statusLabel = MANUTENCAO_STATUS[h.STATUS_NOVO] ? MANUTENCAO_STATUS[h.STATUS_NOVO].label : h.STATUS_NOVO;
+      const isLast = i === historico.length - 1;
+      const item = el(
+        '<div class="row" style="gap:10px;align-items:flex-start">' +
+          '<div class="stack" style="align-items:center;gap:0;flex:0 0 auto">' +
+            '<span style="width:10px;height:10px;border-radius:50%;background:' + info.dot + ';flex:0 0 auto"></span>' +
+            (isLast ? '' : '<span style="width:1px;flex:1;background:var(--line);min-height:24px"></span>') +
+          '</div>' +
+          '<div class="stack" style="gap:2px;padding-bottom:16px;flex:1">' +
+            '<span style="font-size:13px;font-weight:600">' + escapeHtml(info.label) + ' · ' + escapeHtml(info.quem) +
+              (h.TIPO !== 'ABERTURA' ? ' <span class="subtle" style="font-weight:400">→ ' + escapeHtml(statusLabel) + '</span>' : '') + '</span>' +
+            '<span class="subtle" style="font-size:12px">' + escapeHtml(h.AUTOR || '—') + ' · ' + escapeHtml(h.DATA || '') + '</span>' +
+            (h.COMENTARIO ? '<span style="font-size:13px">' + escapeHtml(h.COMENTARIO) + '</span>' : '') +
+            (h.FOTO ? '<img class="photo-preview" style="max-width:200px" src="' + h.FOTO + '">' : '') +
+          '</div>' +
+        '</div>'
+      );
+      timelineWrap.appendChild(item);
+    });
+  }).catch(function () { document.getElementById('tlLoading').textContent = 'Não foi possível carregar a linha do tempo.'; });
+
+  if (m.STATUS === 'FINALIZADA') return;
 
   // Só o admin muda o status — o conferente só acompanha (tela somente leitura).
   if (S.usuario.TIPO !== 'ADMIN') return;
@@ -2309,18 +2361,29 @@ function renderManutencaoDetalhe() {
   app.appendChild(statusWrap);
   const row = el('<div class="option-grid" style="grid-template-columns:1fr 1fr"></div>');
   statusWrap.appendChild(row);
+  const comentarioArea = el('<div class="stack" style="display:none"></div>');
+  statusWrap.appendChild(comentarioArea);
 
   ['NAO_INICIADO', 'EM_ANDAMENTO', 'AGUARDANDO_APROVACAO'].forEach(function (st) {
     if (st === m.STATUS) return; // não mostra o status atual como opção
     const info = MANUTENCAO_STATUS[st];
     const btn = el('<button type="button" class="option-btn">' + info.label + '</button>');
-    btn.onclick = async function () {
-      btn.disabled = true;
-      try {
-        await api('atualizarStatusManutencao', { idManutencao: m.ID_MANUTENCAO, status: st });
-        toast('Status atualizado para "' + info.label + '".', false, true);
-        go('manutencoes');
-      } catch (e) { btn.disabled = false; }
+    btn.onclick = function () {
+      row.querySelectorAll('.option-btn').forEach(function (b) { b.classList.remove('is-selected'); });
+      btn.classList.add('is-selected');
+      comentarioArea.style.display = 'flex';
+      comentarioArea.innerHTML = '';
+      const campo = textField(comentarioArea, { label: 'Comentário para o conferente (opcional)', multiline: true, placeholder: 'Ex: equipe agendada para quinta-feira' });
+      const btnConfirmar = el('<button class="btn btn--primary btn--sm" style="align-self:flex-start">Confirmar → ' + info.label + '</button>');
+      comentarioArea.appendChild(btnConfirmar);
+      btnConfirmar.onclick = async function () {
+        btnConfirmar.disabled = true; btnConfirmar.textContent = 'Salvando…';
+        try {
+          await api('atualizarStatusManutencao', { idManutencao: m.ID_MANUTENCAO, status: st, comentario: campo.getValue(), autor: S.usuario.NOME });
+          toast('Status atualizado para "' + info.label + '".', false, true);
+          go('manutencoes');
+        } catch (e) { btnConfirmar.disabled = false; btnConfirmar.textContent = 'Confirmar → ' + info.label; }
+      };
     };
     row.appendChild(btn);
   });
@@ -2337,7 +2400,7 @@ function renderManutencaoDetalhe() {
     if (!foto.getValue()) { toast('A foto de comprovação é obrigatória', true); return; }
     btnFinalizar.disabled = true; btnFinalizar.textContent = 'Enviando…';
     try {
-      await api('atualizarStatusManutencao', { idManutencao: m.ID_MANUTENCAO, status: 'FINALIZADA', descricaoConclusao: desc.getValue(), fotoConclusao: foto.getValue() });
+      await api('atualizarStatusManutencao', { idManutencao: m.ID_MANUTENCAO, status: 'FINALIZADA', descricaoConclusao: desc.getValue(), fotoConclusao: foto.getValue(), autor: S.usuario.NOME });
       toast('Manutenção finalizada!', false, true);
       go('manutencoes');
     } catch (e) { btnFinalizar.disabled = false; btnFinalizar.textContent = '✓ Marcar como finalizada'; }

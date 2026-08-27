@@ -194,8 +194,8 @@ function photoField(container, opts) {
   const wrap = el(
     '<div class="photo-input">' +
       '<label>' + escapeHtml(opts.label || 'Foto') + (opts.required ? ' *' : '') + '</label>' +
-      '<div class="photo-btn' + (opts.required ? ' required' : '') + '" data-role="btn">📷 Toque para adicionar foto' + (opts.required ? ' (obrigatória)' : '') + '</div>' +
-      '<input type="file" accept="image/*" capture="environment" style="display:none" data-role="input">' +
+      '<div class="photo-btn' + (opts.required ? ' required' : '') + '" data-role="btn">📷 Toque para tirar foto ou escolher da galeria' + (opts.required ? ' (obrigatória)' : '') + '</div>' +
+      '<input type="file" accept="image/*" style="display:none" data-role="input">' +
     '</div>'
   );
   let dataUrl = opts.initial || null;
@@ -211,8 +211,8 @@ function photoField(container, opts) {
     } else {
       wrap.innerHTML =
         '<label>' + escapeHtml(opts.label || 'Foto') + (opts.required ? ' *' : '') + '</label>' +
-        '<div class="photo-btn' + (opts.required ? ' required' : '') + '" data-role="btn">📷 Toque para adicionar foto' + (opts.required ? ' (obrigatória)' : '') + '</div>' +
-        '<input type="file" accept="image/*" capture="environment" style="display:none" data-role="input">';
+        '<div class="photo-btn' + (opts.required ? ' required' : '') + '" data-role="btn">📷 Toque para tirar foto ou escolher da galeria' + (opts.required ? ' (obrigatória)' : '') + '</div>' +
+        '<input type="file" accept="image/*" style="display:none" data-role="input">';
       wrap.querySelector('[data-role="btn"]').onclick = function () { wrap.querySelector('[data-role="input"]').click(); };
       wrap.querySelector('[data-role="input"]').onchange = async function (e) {
         const file = e.target.files[0];
@@ -1949,7 +1949,15 @@ async function renderResumoGeral() {
       '</div>'
     ));
 
+    if (d.diasSemCaptura > 0 && d.diasSemCapturaPrimeira) {
+      const periodoTexto = d.diasSemCapturaPrimeira === d.diasSemCapturaUltima
+        ? 'dia ' + d.diasSemCapturaPrimeira
+        : 'de ' + d.diasSemCapturaPrimeira + ' a ' + d.diasSemCapturaUltima;
+      body.appendChild(el('<p class="subtle" style="text-align:center;color:#8B5CF6;font-weight:600">Total de dias sem captura: ' + d.diasSemCaptura + ' (' + periodoTexto + ')</p>'));
+    }
+
     body.appendChild(barCard('Rondas por conferente', d.porConferente));
+    body.appendChild(barCard('Dias sem captura por armazém', d.diasSemCapturaPorArmazem));
 
     const descricaoPeriodo = selPeriodo.value === 'tudo' ? 'Todo o período'
       : selPeriodo.value === 'semana' ? 'Esta semana'

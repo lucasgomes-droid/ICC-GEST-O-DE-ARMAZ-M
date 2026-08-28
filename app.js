@@ -1395,13 +1395,13 @@ function renderAdminHome() {
 // ------------------------- ADMIN: VALIDAÇÃO DE INSPEÇÕES -------------------------
 
 async function renderValidacaoInspecoes() {
-  app.appendChild(el(screenHeader('Validação de inspeções', S.unidade.UNIDADE, 'Só aparecem inspeções com algum registro (avaria, goteira, risco ou captura)')));
+  app.appendChild(el(screenHeader('Validação de inspeções', S.unidade.UNIDADE, 'Mostrando só as pendentes — escolha "Todos os status" para ver aprovadas/reprovadas')));
   const filterWrap = el(
     '<div class="filters">' +
       '<select id="fArmazem"><option value="">Todos os armazéns</option></select>' +
       '<select id="fResultado">' +
-        '<option value="">Todos os status</option>' +
         '<option value="PENDENTE_VALIDACAO">Pendente de validação</option>' +
+        '<option value="">Todos os status</option>' +
         '<option value="APROVADA">Aprovada</option>' +
         '<option value="REPROVADA">Reprovada</option>' +
       '</select>' +
@@ -1419,7 +1419,11 @@ async function renderValidacaoInspecoes() {
     listWrap.innerHTML = '<p class="subtle">Carregando…</p>';
     const rows = await api('getInspecoes', { unidade: S.unidade.UNIDADE, armazem: selArm.value, status: document.getElementById('fResultado').value, apenasComOcorrencias: true }).catch(function () { return []; });
     listWrap.innerHTML = '';
-    if (!rows.length) { listWrap.appendChild(el('<div class="empty"><span class="ic">🔎</span>Nenhuma inspeção com registros encontrada.</div>')); return; }
+    if (!rows.length) {
+      const msg = document.getElementById('fResultado').value === 'PENDENTE_VALIDACAO' ? 'Nenhuma inspeção pendente de validação. ✅' : 'Nenhuma inspeção encontrada com esse filtro.';
+      listWrap.appendChild(el('<div class="empty"><span class="ic">🔎</span>' + msg + '</div>'));
+      return;
+    }
     renderPaginado(listWrap, rows, function (i) {
       const resumo = '<div class="list-item__sub" style="color:var(--st-risco);font-weight:600;margin-top:2px">⚠ ' + escapeHtml(i.RESUMO_OCORRENCIAS) + '</div>';
       const item = el(
@@ -2225,8 +2229,18 @@ async function renderManutencoes() {
     body.appendChild(barCard('Por tipo', d.porTipo));
     body.appendChild(evolucaoCard('Evolução das manutenções por data', d.registros, function (r) { return String(r.DATA_ABERTURA || '').split(' ')[0]; }));
 
-    const listCard = el('<div class="card stack"><h3 class="title-lg">Lista de manutenções</h3></div>');
+    // Lista detalhada some por padrão pra não poluir a tela — só abre quando
+    // o admin realmente precisa consultar item por item.
+    const btnVerLista = el('<button class="btn btn--outline btn--block">📋 Ver lista de manutenções (' + lista.length + ')</button>');
+    body.appendChild(btnVerLista);
+    const listCard = el('<div class="card stack" style="display:none;margin-top:12px"><h3 class="title-lg">Lista de manutenções</h3></div>');
     body.appendChild(listCard);
+    btnVerLista.onclick = function () {
+      const abrindo = listCard.style.display === 'none';
+      listCard.style.display = abrindo ? 'flex' : 'none';
+      btnVerLista.textContent = (abrindo ? '📋 Esconder lista de manutenções (' : '📋 Ver lista de manutenções (') + lista.length + ')';
+      if (abrindo) listCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
     if (!lista.length) { listCard.appendChild(el('<p class="subtle">Nenhuma manutenção encontrada.</p>')); return; }
     renderPaginado(listCard, lista, function (m) {
       const info = MANUTENCAO_STATUS[m.STATUS] || { label: m.STATUS, cls: 'aberta' };

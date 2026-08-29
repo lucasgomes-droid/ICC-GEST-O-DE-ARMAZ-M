@@ -231,10 +231,18 @@ input,select,textarea{font-family:inherit;font-size:16px}
 }
 @keyframes spin{to{transform:rotate(360deg)}}
 
+/* Mapa de capturas/goteiras + lista lateral: empilhado no celular,
+   lado a lado a partir de telas maiores (tablet/desktop). */
+.map-side-layout{display:flex;flex-direction:column;gap:12px}
+.map-side-layout .list-col{max-height:520px;overflow-y:auto}
+
 @media (min-width:720px){
   .app{max-width:880px}
   .option-grid{grid-template-columns:repeat(4,1fr)}
   .kpi-grid{grid-template-columns:repeat(4,1fr)}
+  .map-side-layout{flex-direction:row;align-items:flex-start}
+  .map-side-layout .map-col{flex:1.6;min-width:0}
+  .map-side-layout .list-col{flex:1;min-width:260px}
 }
 
 @media (prefers-reduced-motion: reduce){

@@ -2152,7 +2152,7 @@ async function renderResumoGeral() {
     btnPDF.onclick = async function () {
       btnPDF.disabled = true; btnPDF.textContent = 'Montando mapas…';
       try {
-        const mapasImagens = await capturarImagensDosMapas();
+        const mapasImagens = await capturarImagensDosMapas(range);
 
         let anterior = null;
         let descricaoAnterior = '';
@@ -2190,12 +2190,13 @@ async function renderResumoGeral() {
 // Mapa de Capturas — ou os pontos de goteira, igual à tela de Mapa de
 // Goteiras) num <canvas> escondido e exporta como PNG base64, para embutir
 // no PDF do jeito que aparece no app.
-async function capturarImagensDosMapas() {
+async function capturarImagensDosMapas(range) {
+  range = range || {};
   const mapas = await api('getMapasDisponiveis', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
   const resultado = [];
   for (const mapa of mapas) {
     try {
-      const pontos = await api('getMapaCapturas', { unidade: S.unidade.UNIDADE, mapa: mapa });
+      const pontos = await api('getMapaCapturas', { unidade: S.unidade.UNIDADE, mapa: mapa, dataInicial: range.dataInicial || '', dataFinal: range.dataFinal || '' });
       const base64 = await desenharMapaEmCanvas('assets/mapas/' + mapa, pontos, 'carunchos');
       if (base64) resultado.push({ label: MAPA_LABEL[mapa] || mapa, base64: base64, tipo: 'CARUNCHO' });
     } catch (e) { /* pula esse mapa se der erro */ }
@@ -2607,7 +2608,7 @@ function corMarcador(quantidade) {
 }
 
 async function renderMapaCapturas() {
-  appendHtml(app, screenHeader('Mapa de capturas', S.unidade.UNIDADE, 'Posição real das armadilhas — cor conforme a última leitura'));
+  appendHtml(app, screenHeader('Mapa de capturas', S.unidade.UNIDADE, 'Posição real das armadilhas — cor conforme o total capturado no período'));
 
   const mapas = await api('getMapasDisponiveis', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
   if (!mapas.length) {
@@ -2616,40 +2617,95 @@ async function renderMapaCapturas() {
   }
 
   let mapaAtual = mapas[0];
+  const filterWrap = el(
+    '<div class="filters">' +
+      (mapas.length > 1 ? '<select id="fMapa">' + mapas.map(function (m) { return '<option value="' + escapeHtml(m) + '">' + escapeHtml(MAPA_LABEL[m] || m) + '</option>'; }).join('') + '</select>' : '') +
+      '<select id="fPeriodo">' +
+        '<option value="tudo">Todo o período</option>' +
+        '<option value="semana">Esta semana</option>' +
+        '<option value="mes">Este mês</option>' +
+        '<option value="custom">Período personalizado</option>' +
+      '</select>' +
+    '</div>'
+  );
+  app.appendChild(filterWrap);
+
+  const customWrap = el(
+    '<div class="filters" id="customDates" style="display:none">' +
+      '<input type="date" id="fDataInicial">' +
+      '<input type="date" id="fDataFinal">' +
+      '<button class="btn btn--outline btn--sm" id="btnAplicar">Aplicar</button>' +
+    '</div>'
+  );
+  app.appendChild(customWrap);
+
   if (mapas.length > 1) {
-    const selWrap = el('<div class="filters"></div>');
-    app.appendChild(selWrap);
-    const sel = el('<select>' + mapas.map(function (m) { return '<option value="' + escapeHtml(m) + '">' + escapeHtml(MAPA_LABEL[m] || m) + '</option>'; }).join('') + '</select>');
-    selWrap.appendChild(sel);
-    sel.onchange = function () { mapaAtual = sel.value; load(); };
+    document.getElementById('fMapa').onchange = function () { mapaAtual = document.getElementById('fMapa').value; load(); };
   }
+  const selPeriodo = document.getElementById('fPeriodo');
+  const customDates = document.getElementById('customDates');
+  selPeriodo.onchange = function () {
+    customDates.style.display = selPeriodo.value === 'custom' ? 'flex' : 'none';
+    if (selPeriodo.value !== 'custom') load();
+  };
+  document.getElementById('btnAplicar').onclick = load;
 
   const legenda = el(
     '<div class="row" style="gap:14px;flex-wrap:wrap;font-size:12.5px">' +
       '<span class="row" style="gap:5px"><span style="width:12px;height:12px;border-radius:50%;background:#2f9e64;display:inline-block"></span>0 capturas</span>' +
       '<span class="row" style="gap:5px"><span style="width:12px;height:12px;border-radius:50%;background:#df8630;display:inline-block"></span>1-2 capturas</span>' +
       '<span class="row" style="gap:5px"><span style="width:12px;height:12px;border-radius:50%;background:#d64545;display:inline-block"></span>3+ capturas</span>' +
-      '<span class="row" style="gap:5px"><span style="width:12px;height:12px;border-radius:50%;background:#9aa0a6;display:inline-block"></span>Sem leitura no app ainda</span>' +
+      '<span class="row" style="gap:5px"><span style="width:12px;height:12px;border-radius:50%;background:#9aa0a6;display:inline-block"></span>Sem leitura no período</span>' +
     '</div>'
   );
   app.appendChild(legenda);
 
-  const mapWrap = el('<div class="card" style="padding:0;overflow:hidden;position:relative;margin-top:10px"><p class="subtle" style="padding:16px">Carregando…</p></div>');
-  app.appendChild(mapWrap);
+  const layoutWrap = el('<div class="map-side-layout" style="margin-top:10px"></div>');
+  app.appendChild(layoutWrap);
 
+  const mapCol = el('<div class="map-col"></div>');
+  const mapWrap = el('<div class="card" style="padding:0;overflow:hidden;position:relative"><p class="subtle" style="padding:16px">Carregando…</p></div>');
+  mapCol.appendChild(mapWrap);
   const detailWrap = el('<div class="card stack" id="detalheArmadilha" style="display:none;margin-top:10px"></div>');
-  app.appendChild(detailWrap);
+  mapCol.appendChild(detailWrap);
+  layoutWrap.appendChild(mapCol);
+
+  const listCol = el('<div class="list-col"><div class="card stack"><h3 class="title-lg">Capturas por armadilha</h3><div id="listaArmadilhas" class="stack" style="gap:8px"><p class="subtle">Carregando…</p></div></div></div>');
+  layoutWrap.appendChild(listCol);
+  const listaArmadilhas = listCol.querySelector('#listaArmadilhas');
 
   async function load() {
     mapWrap.innerHTML = '<p class="subtle" style="padding:16px">Carregando…</p>';
+    listaArmadilhas.innerHTML = '<p class="subtle">Carregando…</p>';
     detailWrap.style.display = 'none';
-    const pontos = await api('getMapaCapturas', { unidade: S.unidade.UNIDADE, mapa: mapaAtual }).catch(function () { return []; });
+
+    let range = { dataInicial: '', dataFinal: '' };
+    if (selPeriodo.value === 'custom') {
+      const ini = document.getElementById('fDataInicial').value; // yyyy-mm-dd
+      const fim = document.getElementById('fDataFinal').value;
+      if (ini) range.dataInicial = dateToBR(new Date(ini + 'T00:00:00'));
+      if (fim) range.dataFinal = dateToBR(new Date(fim + 'T00:00:00'));
+    } else {
+      range = periodoRange(selPeriodo.value);
+    }
+
+    const pontos = await api('getMapaCapturas', { unidade: S.unidade.UNIDADE, mapa: mapaAtual, dataInicial: range.dataInicial, dataFinal: range.dataFinal }).catch(function () { return []; });
     mapWrap.innerHTML = '';
 
     const container = el('<div style="position:relative;width:100%;line-height:0"></div>');
     const img = el('<img src="assets/mapas/' + mapaAtual + '" style="width:100%;display:block" alt="Mapa">');
     container.appendChild(img);
     mapWrap.appendChild(container);
+
+    function mostrarDetalhe(p, cor) {
+      detailWrap.style.display = 'flex';
+      detailWrap.innerHTML =
+        '<div class="row between"><span class="list-item__title">Armadilha ' + escapeHtml(p.armadilha) + (p.tipo === 'ECOZONE' ? ' · ECOZONE' : '') + '</span>' +
+        '<span class="tag" style="background:' + cor + '22;color:' + cor + '">' + (p.quantidade === null ? 'Sem leitura' : p.quantidade + ' capturado(s)') + '</span></div>' +
+        (p.armazem ? '<div class="subtle">Armazém: ' + escapeHtml(p.armazem) + '</div>' : '') +
+        (p.dataUltimaCaptura ? '<div class="subtle">Última leitura no período: ' + escapeHtml(p.dataUltimaCaptura) + '</div>' : '<div class="subtle">Nenhuma captura registrada no período selecionado.</div>');
+      detailWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
 
     pontos.forEach(function (p) {
       if (p.xPct === '' || p.xPct === null || p.xPct === undefined) return;
@@ -2660,17 +2716,30 @@ async function renderMapaCapturas() {
         'color:#fff;font-family:var(--mono);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0">' +
         escapeHtml(p.armadilha) + '</button>'
       );
-      marker.onclick = function () {
-        detailWrap.style.display = 'flex';
-        detailWrap.innerHTML =
-          '<div class="row between"><span class="list-item__title">Armadilha ' + escapeHtml(p.armadilha) + (p.tipo === 'ECOZONE' ? ' · ECOZONE' : '') + '</span>' +
-          '<span class="tag" style="background:' + cor + '22;color:' + cor + '">' + (p.quantidade === null ? 'Sem leitura' : p.quantidade + ' capturado(s)') + '</span></div>' +
-          (p.armazem ? '<div class="subtle">Armazém: ' + escapeHtml(p.armazem) + '</div>' : '') +
-          (p.dataUltimaCaptura ? '<div class="subtle">Última leitura: ' + escapeHtml(p.dataUltimaCaptura) + '</div>' : '<div class="subtle">Nenhuma captura registrada no app ainda para esta armadilha.</div>');
-        detailWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      };
+      marker.onclick = function () { mostrarDetalhe(p, cor); };
       container.appendChild(marker);
     });
+
+    // Lista lateral acompanha o mesmo filtro de período do mapa, ordenada
+    // das armadilhas com mais captura para as com menos.
+    listaArmadilhas.innerHTML = '';
+    const ordenadas = pontos.slice().sort(function (a, b) { return (b.quantidade || 0) - (a.quantidade || 0); });
+    if (!ordenadas.length) {
+      listaArmadilhas.appendChild(el('<p class="subtle">Nenhuma armadilha cadastrada neste mapa.</p>'));
+    } else {
+      ordenadas.forEach(function (p) {
+        const cor = corMarcador(p.quantidade);
+        const item = el(
+          '<button type="button" class="list-item" style="width:100%;padding:10px 12px">' +
+            '<span><span class="list-item__title">Armadilha ' + escapeHtml(p.armadilha) + '</span>' +
+            (p.armazem ? '<div class="list-item__sub">' + escapeHtml(p.armazem) + '</div>' : '') + '</span>' +
+            '<span class="tag" style="background:' + cor + '22;color:' + cor + '">' + (p.quantidade === null ? 'Sem leitura' : p.quantidade) + '</span>' +
+          '</button>'
+        );
+        item.onclick = function () { mostrarDetalhe(p, cor); };
+        listaArmadilhas.appendChild(item);
+      });
+    }
   }
   load();
 }

@@ -378,6 +378,7 @@ function render() {
     manutencoes: renderManutencoes,
     manutencoesConferente: renderManutencoesConferente,
     mapaCapturas: renderMapaCapturas,
+    mapaGoteiras: renderMapaGoteiras,
     resumoGeral: renderResumoGeral,
     manutencaoDetalhe: renderManutencaoDetalhe,
     relatorios: renderRelatorios,
@@ -546,6 +547,7 @@ function renderConferenteHome() {
       menuCard('🧹', 'Checklist de limpeza', 'Diário, semanal, mensal ou anual', 'checklist') +
       menuCard('📋', 'Minhas pendências', 'Ver e resolver pendências direcionadas a você', 'minhasPendencias') +
       menuCard('🔧', 'Manutenções', 'Acompanhar o andamento das manutenções da unidade', 'manutencoesConferente') +
+      menuCard('☔', 'Mapa de goteiras', 'Ver e resolver goteiras marcadas no mapa', 'mapaGoteiras') +
       menuCard('🕘', 'Histórico', 'Suas inspeções e checklists anteriores', 'historico') +
     '</div>'
   );
@@ -588,12 +590,7 @@ function renderInspecao() {
     montarDescricao: function (v) { return 'Local: ' + v.rua + ' / Baia: ' + v.baia + (v.obs ? ' — ' + v.obs : ''); }
   });
 
-  if (w.step === 'goteira') return stepMultiplo(w, {
-    titulo: 'Novas goteiras encontradas?', itemLabel: 'Goteira', perguntaQuantidade: 'Quantas novas goteiras foram encontradas?',
-    tipoOcorrencia: 'Goteira', next: 'quedaTombamento',
-    campos: [{ key: 'rua', label: 'Qual rua?' }, { key: 'baia', label: 'Qual baia?' }, { key: 'obs', label: 'Observação', multiline: true }],
-    montarDescricao: function (v) { return 'Rua: ' + v.rua + ' / Baia: ' + v.baia + (v.obs ? ' — ' + v.obs : ''); }
-  });
+  if (w.step === 'goteira') return stepGoteira(w);
 
   if (w.step === 'quedaTombamento') return stepMultiplo(w, {
     titulo: 'Existem cargas ou baias com risco de queda ou tombamento?', itemLabel: 'Risco', perguntaQuantidade: 'Quantos pontos de risco foram encontrados?',
@@ -662,7 +659,165 @@ function stepSimNao(w, opts) {
   };
 }
 
-// Helper genérico usado por avaria, goteira e risco de queda/tombamento:
+// Passo especial de goteira: em vez de digitar rua/baia manualmente, o
+// conferente toca na planta baixa do armazém (mesma imagem do mapa de
+// capturas) para marcar a posição exata de cada goteira encontrada. Só
+// libera "Continuar" quando a quantidade marcada bate com a informada, e
+// permite desfazer a última marcação antes de confirmar. Cada ponto exige
+// uma foto, igual ao padrão das outras ocorrências.
+function stepGoteira(w) {
+  const container = el(wizardHeader('Novas goteiras encontradas?'));
+  app.appendChild(container);
+  const card = el('<div class="card stack"></div>');
+  app.appendChild(card);
+
+  const yn = yesNoField(card, 'Novas goteiras encontradas?');
+  const sub = el('<div class="stack" style="display:none"></div>');
+  card.appendChild(sub);
+
+  let entries = null; // preenchido só depois de confirmar as posições no mapa
+  let mapaConfirmado = null;
+
+  yn.node.addEventListener('change', function () {
+    const val = yn.getValue();
+    sub.style.display = val ? 'flex' : 'none';
+    sub.innerHTML = '';
+    entries = null;
+    mapaConfirmado = null;
+    if (!val) return;
+
+    const qtd = textField(sub, { label: 'Quantas novas goteiras foram encontradas?', type: 'number' });
+    const btnMapa = el('<button type="button" class="btn btn--outline btn--sm" style="align-self:flex-start">Marcar no mapa</button>');
+    sub.appendChild(btnMapa);
+    const mapaArea = el('<div class="stack"></div>');
+    sub.appendChild(mapaArea);
+
+    btnMapa.onclick = async function () {
+      const n = parseInt(qtd.getValue(), 10);
+      if (!n || n < 1) { toast('Informe um número válido', true); return; }
+      entries = null;
+      mapaConfirmado = null;
+      mapaArea.innerHTML = '<p class="subtle">Carregando mapa…</p>';
+      const mapas = await api('getMapasDisponiveis', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+      if (!mapas.length) {
+        mapaArea.innerHTML = '<p class="subtle">Nenhum mapa cadastrado para esta unidade — fale com o administrador antes de continuar.</p>';
+        return;
+      }
+      mapaArea.innerHTML = '';
+
+      let mapaAtual = mapas[0];
+      if (mapas.length > 1) {
+        const selWrap = el('<div class="filters"></div>');
+        mapaArea.appendChild(selWrap);
+        const selEl = el('<select>' + mapas.map(function (m) { return '<option value="' + escapeHtml(m) + '">' + escapeHtml(MAPA_LABEL[m] || m) + '</option>'; }).join('') + '</select>');
+        selWrap.appendChild(selEl);
+        selEl.onchange = function () { mapaAtual = selEl.value; renderMapaTap(); };
+      }
+
+      const statusLine = el('<p class="subtle" style="margin:0"></p>');
+      mapaArea.appendChild(statusLine);
+      const mapBox = el('<div class="card" style="padding:0;overflow:hidden;position:relative"></div>');
+      mapaArea.appendChild(mapBox);
+      const btnRow = el('<div class="row" style="gap:8px"></div>');
+      const btnDesfazer = el('<button type="button" class="btn btn--outline btn--sm">Desfazer última</button>');
+      const btnConfirmarPontos = el('<button type="button" class="btn btn--primary btn--sm" disabled>Confirmar posições</button>');
+      btnRow.appendChild(btnDesfazer); btnRow.appendChild(btnConfirmarPontos);
+      mapaArea.appendChild(btnRow);
+      const formsWrap = el('<div class="stack"></div>');
+      mapaArea.appendChild(formsWrap);
+
+      let pontos = [];
+      let mapContainer, img;
+
+      function renderMapaTap() {
+        pontos = [];
+        mapBox.innerHTML = '';
+        formsWrap.innerHTML = '';
+        entries = null;
+        mapContainer = el('<div style="position:relative;width:100%;line-height:0"></div>');
+        img = el('<img src="assets/mapas/' + mapaAtual + '" style="width:100%;display:block" alt="Mapa">');
+        mapContainer.appendChild(img);
+        mapBox.appendChild(mapContainer);
+        atualizarStatus();
+        mapContainer.onclick = function (e) {
+          if (e.target !== img) return; // ignora clique em cima de um marcador já colocado
+          if (pontos.length >= n) { toast('Você já marcou ' + n + ' goteira(s). Use "Desfazer última" se precisar corrigir.', true); return; }
+          const rect = img.getBoundingClientRect();
+          const xPct = ((e.clientX - rect.left) / rect.width) * 100;
+          const yPct = ((e.clientY - rect.top) / rect.height) * 100;
+          pontos.push({ xPct: xPct.toFixed(2), yPct: yPct.toFixed(2) });
+          desenharMarcadores();
+          atualizarStatus();
+        };
+      }
+      function desenharMarcadores() {
+        mapContainer.querySelectorAll('[data-marcador]').forEach(function (m) { m.remove(); });
+        pontos.forEach(function (p, i) {
+          const marker = el(
+            '<div data-marcador style="position:absolute;left:' + p.xPct + '%;top:' + p.yPct + '%;transform:translate(-50%,-50%);' +
+            'width:24px;height:24px;border-radius:50%;background:var(--st-tratamento);border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.4);' +
+            'color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center">' + (i + 1) + '</div>'
+          );
+          mapContainer.appendChild(marker);
+        });
+      }
+      function atualizarStatus() {
+        statusLine.textContent = pontos.length + ' de ' + n + ' marcadas — toque no mapa para marcar cada goteira';
+        btnDesfazer.disabled = pontos.length === 0;
+        btnConfirmarPontos.disabled = pontos.length !== n;
+      }
+      btnDesfazer.onclick = function () {
+        pontos.pop();
+        entries = null;
+        formsWrap.innerHTML = '';
+        desenharMarcadores();
+        atualizarStatus();
+        btnConfirmarPontos.disabled = pontos.length !== n;
+      };
+
+      btnConfirmarPontos.onclick = function () {
+        mapaConfirmado = mapaAtual;
+        formsWrap.innerHTML = '';
+        entries = [];
+        pontos.forEach(function (p, i) {
+          const box = el('<div class="card" style="padding:14px;background:#fafbfa"><h3 class="title-lg" style="margin-bottom:8px">Goteira ' + (i + 1) + '</h3></div>');
+          formsWrap.appendChild(box);
+          const obs = textField(box, { label: 'Observação (opcional)', multiline: true });
+          const foto = photoField(box, { label: 'Foto', required: true });
+          entries.push({ ponto: p, obs: obs, foto: foto });
+        });
+      };
+      renderMapaTap();
+    };
+  });
+
+  const btn = el('<button class="btn btn--primary btn--block" style="margin-top:6px">Continuar</button>');
+  card.appendChild(btn);
+  btn.onclick = function () {
+    const val = yn.getValue();
+    if (val === null) { toast('Selecione Sim ou Não', true); return; }
+    if (val) {
+      if (!entries || !entries.length) { toast('Marque as goteiras no mapa e confirme as posições', true); return; }
+      for (const e of entries) {
+        if (!e.foto.getValue()) { toast('A foto é obrigatória em todas as goteiras marcadas', true); return; }
+      }
+      entries.forEach(function (e) {
+        const obsVal = e.obs.getValue();
+        w.ocorrencias.push({
+          tipo: 'Goteira',
+          descricao: 'Marcada no mapa' + (obsVal ? ' — ' + obsVal : ''),
+          foto: e.foto.getValue(),
+          pontoMapa: { mapa: mapaConfirmado, xPct: e.ponto.xPct, yPct: e.ponto.yPct }
+        });
+      });
+    }
+    w.step = 'quedaTombamento';
+    render();
+  };
+}
+
+// Helper genérico usado por avaria e risco de queda/tombamento (goteira usa
+// stepGoteira, acima, por precisar de marcação no mapa em vez de rua/baia):
 // pergunta Sim/Não, se Sim pergunta quantas foram encontradas e gera um
 // mini-formulário para cada uma (foto obrigatória em todas).
 function stepMultiplo(w, opts) {
@@ -1386,6 +1541,7 @@ function renderAdminHome() {
       menuCard('⚠️', 'Ocorrências da inspeção', 'Avaria, goteira e risco de queda/tombamento por armazém', 'dashOcorrencias') +
       menuCard('🔧', 'Manutenções', 'Itens pendentes e concluídos, por armazém', 'manutencoes') +
       menuCard('🗺️', 'Mapa de capturas', 'Visualização espacial das armadilhas', 'mapaCapturas') +
+      menuCard('☔', 'Mapa de goteiras', 'Pontos marcados pelos conferentes na inspeção', 'mapaGoteiras') +
       menuCard('🧹', 'Dashboard de limpeza', 'Checklists realizados e pendentes', 'dashChecklist') +
     '</div>'
   );
@@ -2031,22 +2187,32 @@ async function renderResumoGeral() {
 }
 
 // Desenha cada mapa (imagem base + marcadores coloridos, igual à tela de
-// Mapa de Capturas) num <canvas> escondido e exporta como PNG base64, para
-// embutir no PDF do jeito que aparece no app.
+// Mapa de Capturas — ou os pontos de goteira, igual à tela de Mapa de
+// Goteiras) num <canvas> escondido e exporta como PNG base64, para embutir
+// no PDF do jeito que aparece no app.
 async function capturarImagensDosMapas() {
   const mapas = await api('getMapasDisponiveis', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
   const resultado = [];
   for (const mapa of mapas) {
     try {
       const pontos = await api('getMapaCapturas', { unidade: S.unidade.UNIDADE, mapa: mapa });
-      const base64 = await desenharMapaEmCanvas('assets/mapas/' + mapa, pontos);
-      if (base64) resultado.push({ label: MAPA_LABEL[mapa] || mapa, base64: base64 });
+      const base64 = await desenharMapaEmCanvas('assets/mapas/' + mapa, pontos, 'carunchos');
+      if (base64) resultado.push({ label: MAPA_LABEL[mapa] || mapa, base64: base64, tipo: 'CARUNCHO' });
+    } catch (e) { /* pula esse mapa se der erro */ }
+  }
+  for (const mapa of mapas) {
+    try {
+      const pontosGoteira = await api('getMapaGoteiras', { unidade: S.unidade.UNIDADE, mapa: mapa });
+      if (!pontosGoteira.length) continue; // não vale a pena gerar slide/página de um mapa sem nenhuma goteira ativa
+      const base64 = await desenharMapaEmCanvas('assets/mapas/' + mapa, pontosGoteira, 'goteiras');
+      if (base64) resultado.push({ label: MAPA_LABEL[mapa] || mapa, base64: base64, tipo: 'GOTEIRA' });
     } catch (e) { /* pula esse mapa se der erro */ }
   }
   return resultado;
 }
 
-function desenharMapaEmCanvas(srcImagem, pontos) {
+function desenharMapaEmCanvas(srcImagem, pontos, modo) {
+  modo = modo || 'carunchos';
   return new Promise(function (resolve) {
     const img = new Image();
     img.crossOrigin = 'anonymous';
@@ -2057,14 +2223,14 @@ function desenharMapaEmCanvas(srcImagem, pontos) {
         canvas.height = img.naturalHeight;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0);
-        pontos.forEach(function (p) {
+        pontos.forEach(function (p, i) {
           if (p.xPct === '' || p.xPct === null || p.xPct === undefined) return;
           const x = (p.xPct / 100) * canvas.width;
           const y = (p.yPct / 100) * canvas.height;
           const raio = Math.max(10, canvas.width * 0.014);
           ctx.beginPath();
           ctx.arc(x, y, raio, 0, Math.PI * 2);
-          ctx.fillStyle = corMarcador(p.quantidade);
+          ctx.fillStyle = modo === 'goteiras' ? '#3b82c4' : corMarcador(p.quantidade);
           ctx.fill();
           ctx.lineWidth = Math.max(1.5, raio * 0.15);
           ctx.strokeStyle = '#ffffff';
@@ -2073,7 +2239,9 @@ function desenharMapaEmCanvas(srcImagem, pontos) {
           ctx.font = 'bold ' + Math.round(raio * 0.9) + 'px Arial';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText(String(p.armadilha), x, y);
+          // Goteira não tem posição numerada fixa como a armadilha — numera
+          // pela ordem de marcação em vez de mostrar um número de item.
+          ctx.fillText(modo === 'goteiras' ? '✕' : String(p.armadilha), x, y);
         });
         resolve(canvas.toDataURL('image/png'));
       } catch (e) { resolve(null); }
@@ -2499,6 +2667,79 @@ async function renderMapaCapturas() {
           '<span class="tag" style="background:' + cor + '22;color:' + cor + '">' + (p.quantidade === null ? 'Sem leitura' : p.quantidade + ' capturado(s)') + '</span></div>' +
           (p.armazem ? '<div class="subtle">Armazém: ' + escapeHtml(p.armazem) + '</div>' : '') +
           (p.dataUltimaCaptura ? '<div class="subtle">Última leitura: ' + escapeHtml(p.dataUltimaCaptura) + '</div>' : '<div class="subtle">Nenhuma captura registrada no app ainda para esta armadilha.</div>');
+        detailWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      };
+      container.appendChild(marker);
+    });
+  }
+  load();
+}
+
+// ------------------------- MAPA DE GOTEIRAS -------------------------
+// Mesma planta baixa do mapa de capturas, mas aqui os pontos não têm posição
+// numerada fixa: o conferente toca livremente no mapa durante a inspeção
+// (ver stepGoteira) e o ponto fica salvo até alguém marcar como resolvida.
+// Administradores e conferentes têm o mesmo acesso — só a unidade separa.
+
+async function renderMapaGoteiras() {
+  appendHtml(app, screenHeader('Mapa de goteiras', S.unidade.UNIDADE, 'Pontos marcados pelos conferentes durante a inspeção'));
+
+  const mapas = await api('getMapasDisponiveis', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  if (!mapas.length) {
+    app.appendChild(el('<div class="empty"><span class="ic">🗺️</span>Nenhum mapa cadastrado para esta unidade ainda.</div>'));
+    return;
+  }
+
+  let mapaAtual = mapas[0];
+  if (mapas.length > 1) {
+    const selWrap = el('<div class="filters"></div>');
+    app.appendChild(selWrap);
+    const sel = el('<select>' + mapas.map(function (m) { return '<option value="' + escapeHtml(m) + '">' + escapeHtml(MAPA_LABEL[m] || m) + '</option>'; }).join('') + '</select>');
+    selWrap.appendChild(sel);
+    sel.onchange = function () { mapaAtual = sel.value; load(); };
+  }
+
+  const mapWrap = el('<div class="card" style="padding:0;overflow:hidden;position:relative;margin-top:10px"><p class="subtle" style="padding:16px">Carregando…</p></div>');
+  app.appendChild(mapWrap);
+
+  const detailWrap = el('<div class="card stack" id="detalheGoteira" style="display:none;margin-top:10px"></div>');
+  app.appendChild(detailWrap);
+
+  async function load() {
+    mapWrap.innerHTML = '<p class="subtle" style="padding:16px">Carregando…</p>';
+    detailWrap.style.display = 'none';
+    const pontos = await api('getMapaGoteiras', { unidade: S.unidade.UNIDADE, mapa: mapaAtual }).catch(function () { return []; });
+    mapWrap.innerHTML = '';
+
+    const container = el('<div style="position:relative;width:100%;line-height:0"></div>');
+    const img = el('<img src="assets/mapas/' + mapaAtual + '" style="width:100%;display:block" alt="Mapa">');
+    container.appendChild(img);
+    mapWrap.appendChild(container);
+
+    if (!pontos.length) {
+      const vazio = el('<div class="empty" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;border-radius:var(--radius);padding:10px 16px"><span class="ic">☔</span>Nenhuma goteira ativa neste mapa</div>');
+      container.appendChild(vazio);
+    }
+
+    pontos.forEach(function (p) {
+      if (p.xPct === '' || p.xPct === null || p.xPct === undefined) return;
+      const marker = el(
+        '<button type="button" style="position:absolute;left:' + p.xPct + '%;top:' + p.yPct + '%;transform:translate(-50%,-50%);' +
+        'width:20px;height:20px;border-radius:50%;background:var(--st-tratamento);border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.4);' +
+        'color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0">✕</button>'
+      );
+      marker.onclick = function () {
+        detailWrap.style.display = 'flex';
+        detailWrap.innerHTML =
+          '<div class="row between"><span class="list-item__title">Goteira · ' + escapeHtml(p.armazem || S.unidade.UNIDADE) + '</span></div>' +
+          '<div class="subtle">Registrada em ' + escapeHtml(p.data) + ' por ' + escapeHtml(p.usuario) + '</div>' +
+          (p.foto ? '<img class="photo-preview" src="' + p.foto + '">' : '') +
+          '<button type="button" class="btn btn--outline btn--block" data-role="resolver">Marcar como resolvida (remover do mapa)</button>';
+        detailWrap.querySelector('[data-role="resolver"]').onclick = async function () {
+          await api('resolverGoteiraMapa', { idGoteira: p.idGoteira, usuario: S.usuario.NOME }).catch(function () {});
+          toast('Goteira marcada como resolvida', false, true);
+          load();
+        };
         detailWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       };
       container.appendChild(marker);

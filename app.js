@@ -1802,6 +1802,32 @@ function periodoRange(tipo) {
   return { dataInicial: '', dataFinal: '' };
 }
 
+const MESES_PT = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+
+// Descrição do período pra mostrar no relatório: em vez de só "Esta semana"
+// ou "Este mês", mostra a semana do mês e o intervalo de dias de fato —
+// ex: "3ª semana de agosto (dia 18 a dia 24)" ou "Mês de agosto (dia 1 a dia 24)".
+function descricaoPeriodoDetalhada(tipo, range) {
+  if (tipo === 'tudo') return 'Todo o período';
+  if (tipo === 'custom') return (range.dataInicial || '…') + ' até ' + (range.dataFinal || '…');
+  if (!range.dataInicial) return tipo === 'semana' ? 'Esta semana' : 'Este mês';
+
+  const partesIni = range.dataInicial.split('/'); // [DD, MM, AAAA]
+  const diaIni = Number(partesIni[0]);
+  const mesIni = Number(partesIni[1]);
+  const nomeMes = MESES_PT[mesIni - 1];
+  const diaFim = range.dataFinal ? range.dataFinal.split('/')[0] : partesIni[0];
+
+  if (tipo === 'mes') {
+    return 'Mês de ' + nomeMes + ' (dia ' + partesIni[0] + ' a dia ' + diaFim + ')';
+  }
+  // semana: número da semana dentro do mês, calculado a partir do dia inicial
+  const semanaDoMes = Math.ceil(diaIni / 7);
+  const ordinais = ['1ª', '2ª', '3ª', '4ª', '5ª', '6ª'];
+  const ordinal = ordinais[semanaDoMes - 1] || (semanaDoMes + 'ª');
+  return ordinal + ' semana de ' + nomeMes + ' (dia ' + partesIni[0] + ' a dia ' + diaFim + ')';
+}
+
 async function renderDashInspecoes() {
   app.appendChild(el(screenHeader('Painel do dia', S.unidade.UNIDADE)));
   const body = el('<div class="stack" id="body"><p class="subtle">Carregando…</p></div>');
@@ -1961,10 +1987,7 @@ async function renderRelatorioDetalhe() {
     btnRow.appendChild(btnBaixar);
     btnRow.appendChild(btnPDF);
 
-    const descricaoPeriodo = selPeriodo.value === 'tudo' ? 'Todo o período'
-      : selPeriodo.value === 'semana' ? 'Esta semana'
-      : selPeriodo.value === 'mes' ? 'Este mês'
-      : (range.dataInicial || '…') + ' até ' + (range.dataFinal || '…');
+    const descricaoPeriodo = descricaoPeriodoDetalhada(selPeriodo.value, range);
 
     btnBaixar.onclick = function () {
       if (!ultimasLinhas.length) { toast('Nenhum registro para baixar com esses filtros', true); return; }
@@ -2132,20 +2155,30 @@ async function renderResumoGeral() {
       '</div>'
     ));
 
-    if (d.diasSemCaptura > 0 && d.diasSemCapturaPrimeira) {
-      const periodoTexto = d.diasSemCapturaPrimeira === d.diasSemCapturaUltima
-        ? 'dia ' + d.diasSemCapturaPrimeira
-        : 'de ' + d.diasSemCapturaPrimeira + ' a ' + d.diasSemCapturaUltima;
-      body.appendChild(el('<p class="subtle" style="text-align:center;color:#8B5CF6;font-weight:600">Total de dias sem captura: ' + d.diasSemCaptura + ' (' + periodoTexto + ')</p>'));
+    if (d.diasSemCaptura > 0 && d.diasSemCapturaMaior) {
+      const fmtSeq = function (seq) {
+        return seq.dataInicio === seq.dataFim
+          ? seq.dias + ' dia(s) (dia ' + seq.dataInicio + ')'
+          : seq.dias + ' dia(s) (de ' + seq.dataInicio + ' a ' + seq.dataFim + ')';
+      };
+      const mesmaSequencia = d.diasSemCapturaMaior.dataInicio === d.diasSemCapturaMenor.dataInicio && d.diasSemCapturaMaior.dataFim === d.diasSemCapturaMenor.dataFim;
+      let linhasSeq = '';
+      if (mesmaSequencia && !d.diasSemCapturaAtual) {
+        linhasSeq += '<p class="subtle" style="margin:2px 0"><strong>Única sequência sem captura:</strong> ' + fmtSeq(d.diasSemCapturaMaior) + '</p>';
+      } else {
+        linhasSeq += '<p class="subtle" style="margin:2px 0"><strong>Maior sequência sem captura:</strong> ' + fmtSeq(d.diasSemCapturaMaior) + '</p>';
+        if (!mesmaSequencia) linhasSeq += '<p class="subtle" style="margin:2px 0"><strong>Menor sequência sem captura:</strong> ' + fmtSeq(d.diasSemCapturaMenor) + '</p>';
+      }
+      if (d.diasSemCapturaAtual) {
+        linhasSeq += '<p style="margin:2px 0;color:#8B5CF6;font-weight:600">Sequência atual em aberto: ' + d.diasSemCapturaAtual.dias + ' dia(s) (desde ' + d.diasSemCapturaAtual.dataInicio + ' até o fim do período analisado)</p>';
+      }
+      body.appendChild(el('<div class="card stack" style="text-align:center">' + linhasSeq + '</div>'));
     }
 
     body.appendChild(barCard('Rondas por conferente', d.porConferente));
     body.appendChild(barCard('Dias sem captura por armazém', d.diasSemCapturaPorArmazem));
 
-    const descricaoPeriodo = selPeriodo.value === 'tudo' ? 'Todo o período'
-      : selPeriodo.value === 'semana' ? 'Esta semana'
-      : selPeriodo.value === 'mes' ? 'Este mês'
-      : (range.dataInicial || '…') + ' até ' + (range.dataFinal || '…');
+    const descricaoPeriodo = descricaoPeriodoDetalhada(selPeriodo.value, range);
 
     const btnPDF = el('<button class="btn btn--accent btn--block">📄 Baixar PDF (com gráficos, mapa e comparativo)</button>');
     body.appendChild(btnPDF);

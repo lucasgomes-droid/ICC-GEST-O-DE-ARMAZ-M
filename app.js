@@ -211,49 +211,91 @@ function fileToDataUrl(file) {
   });
 }
 
-// Componente reutilizável de captura de foto. Retorna node + getter.
+// Separador usado pelo backend pra guardar VÁRIAS fotos numa única célula
+// FOTO da planilha (ver salvarFotos_ no Code.gs) — precisa ser o mesmo dos
+// dois lados pra conseguir separar de volta na hora de exibir.
+const FOTO_SEP = '|||';
+
+// Quebra uma string FOTO (0, 1 ou várias URLs coladas com FOTO_SEP) num
+// array de URLs — registros antigos (1 foto só, sem separador) continuam
+// funcionando normalmente, viram array de 1.
+function fotosArray(str) {
+  return String(str || '').split(FOTO_SEP).map(function (s) { return s.trim(); }).filter(Boolean);
+}
+
+// Monta a galeria (1 ou várias fotos lado a lado) pra exibir um valor FOTO
+// já salvo (telas de detalhe/validação). Retorna '' se não houver foto.
+function fotosGaleria(str) {
+  const urls = fotosArray(str);
+  if (!urls.length) return '';
+  return '<div class="photo-gallery">' +
+    urls.map(function (u) { return '<img class="photo-preview" src="' + escapeHtml(u) + '">'; }).join('') +
+  '</div>';
+}
+
+// Componente reutilizável de captura de foto — aceita UMA OU VÁRIAS fotos.
+// Retorna node + getter (sempre um array de data URLs, mesmo vazio).
 function photoField(container, opts) {
   opts = opts || {};
-  const wrap = el(
-    '<div class="photo-input">' +
-      '<label>' + escapeHtml(opts.label || 'Foto') + (opts.required ? ' *' : '') + '</label>' +
-      '<div class="photo-btn' + (opts.required ? ' required' : '') + '" data-role="btn">📷 Toque para tirar foto ou escolher da galeria' + (opts.required ? ' (obrigatória)' : '') + '</div>' +
-      '<input type="file" accept="image/*" style="display:none" data-role="input">' +
-    '</div>'
-  );
-  let dataUrl = opts.initial || null;
-  const btn = wrap.querySelector('[data-role="btn"]');
-  const input = wrap.querySelector('[data-role="input"]');
+  const max = opts.max || 10;
+  let fotos = (opts.initial || []).slice();
+
+  const wrap = el('<div class="photo-input"></div>');
+  container.appendChild(wrap);
+
+  function abrirSeletor() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.multiple = true;
+    input.style.display = 'none';
+    input.onchange = async function (e) {
+      const files = Array.prototype.slice.call(e.target.files || []);
+      for (const file of files) {
+        if (fotos.length >= max) { toast('Máximo de ' + max + ' fotos neste campo', true); break; }
+        fotos.push(await fileToDataUrl(file));
+      }
+      document.body.removeChild(input);
+      refresh();
+    };
+    document.body.appendChild(input);
+    input.click();
+  }
+
   function refresh() {
-    if (dataUrl) {
-      wrap.innerHTML =
-        '<label>' + escapeHtml(opts.label || 'Foto') + (opts.required ? ' *' : '') + '</label>' +
-        '<img class="photo-preview" src="' + dataUrl + '">' +
-        '<button type="button" class="btn btn--outline btn--sm" data-role="remove">Remover foto</button>';
-      wrap.querySelector('[data-role="remove"]').onclick = function () { dataUrl = null; refresh(); };
+    wrap.innerHTML = '';
+    wrap.appendChild(el('<label>' + escapeHtml(opts.label || 'Foto') + (opts.required ? ' *' : '') + '</label>'));
+
+    if (fotos.length) {
+      const grid = el('<div class="photo-grid"></div>');
+      fotos.forEach(function (dataUrl, i) {
+        const thumb = el(
+          '<div class="photo-thumb">' +
+            '<img src="' + dataUrl + '">' +
+            '<button type="button" class="photo-thumb__rm" aria-label="Remover foto">✕</button>' +
+          '</div>'
+        );
+        thumb.querySelector('.photo-thumb__rm').onclick = function () { fotos.splice(i, 1); refresh(); };
+        grid.appendChild(thumb);
+      });
+      if (fotos.length < max) {
+        const addTile = el('<button type="button" class="photo-add-tile" title="Adicionar mais uma foto">＋</button>');
+        addTile.onclick = abrirSeletor;
+        grid.appendChild(addTile);
+      }
+      wrap.appendChild(grid);
     } else {
-      wrap.innerHTML =
-        '<label>' + escapeHtml(opts.label || 'Foto') + (opts.required ? ' *' : '') + '</label>' +
-        '<div class="photo-btn' + (opts.required ? ' required' : '') + '" data-role="btn">📷 Toque para tirar foto ou escolher da galeria' + (opts.required ? ' (obrigatória)' : '') + '</div>' +
-        '<input type="file" accept="image/*" style="display:none" data-role="input">';
-      wrap.querySelector('[data-role="btn"]').onclick = function () { wrap.querySelector('[data-role="input"]').click(); };
-      wrap.querySelector('[data-role="input"]').onchange = async function (e) {
-        const file = e.target.files[0];
-        if (!file) return;
-        dataUrl = await fileToDataUrl(file);
-        refresh();
-      };
+      const btn = el(
+        '<div class="photo-btn' + (opts.required ? ' required' : '') + '">📷 Toque para tirar foto ou escolher da galeria' +
+        (opts.required ? ' (obrigatória)' : ' (pode escolher mais de uma)') + '</div>'
+      );
+      btn.onclick = abrirSeletor;
+      wrap.appendChild(btn);
     }
   }
-  btn.onclick = function () { input.click(); };
-  input.onchange = async function (e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    dataUrl = await fileToDataUrl(file);
-    refresh();
-  };
-  container.appendChild(wrap);
-  return { getValue: function () { return dataUrl; } };
+
+  refresh();
+  return { node: wrap, getValue: function () { return fotos.slice(); } };
 }
 
 // Botões SIM/NÃO
@@ -799,14 +841,14 @@ function stepGoteira(w) {
     if (val) {
       if (!entries || !entries.length) { toast('Marque as goteiras no mapa e confirme as posições', true); return; }
       for (const e of entries) {
-        if (!e.foto.getValue()) { toast('A foto é obrigatória em todas as goteiras marcadas', true); return; }
+        if (!e.foto.getValue().length) { toast('A foto é obrigatória em todas as goteiras marcadas', true); return; }
       }
       entries.forEach(function (e) {
         const obsVal = e.obs.getValue();
         w.ocorrencias.push({
           tipo: 'Goteira',
           descricao: 'Marcada no mapa' + (obsVal ? ' — ' + obsVal : ''),
-          foto: e.foto.getValue(),
+          fotos: e.foto.getValue(),
           pontoMapa: { mapa: mapaConfirmado, xPct: e.ponto.xPct, yPct: e.ponto.yPct }
         });
       });
@@ -869,12 +911,12 @@ function stepMultiplo(w, opts) {
     if (val) {
       if (!entries.length) { toast('Gere e preencha os formulários', true); return; }
       for (const e of entries) {
-        if (!e.foto.getValue()) { toast('A foto é obrigatória em todos os registros', true); return; }
+        if (!e.foto.getValue().length) { toast('A foto é obrigatória em todos os registros', true); return; }
       }
       entries.forEach(function (e) {
         const valores = {};
         Object.keys(e.campos).forEach(function (k) { valores[k] = e.campos[k].getValue(); });
-        w.ocorrencias.push({ tipo: opts.tipoOcorrencia, descricao: opts.montarDescricao(valores), foto: e.foto.getValue() });
+        w.ocorrencias.push({ tipo: opts.tipoOcorrencia, descricao: opts.montarDescricao(valores), fotos: e.foto.getValue() });
       });
     }
     w.step = opts.next;
@@ -1017,12 +1059,12 @@ function stepManutencao(w) {
       if (!refs) { toast('Preencha os dados da manutenção', true); return; }
       if (!refs.tipoSel.getValue()) { toast('Selecione o tipo de manutenção', true); return; }
       if (refs.tipoSel.getValue() === 'Outro' && !refs.getOutro()) { toast('Especifique o tipo de manutenção', true); return; }
-      if (!refs.foto.getValue()) { toast('A foto é obrigatória', true); return; }
+      if (!refs.foto.getValue().length) { toast('A foto é obrigatória', true); return; }
       w.manutencao = {
         local: refs.local.getValue(),
         tipo: refs.tipoSel.getValue() === 'Outro' ? refs.getOutro() : refs.tipoSel.getValue(),
         descricao: refs.descricao.getValue(),
-        foto: refs.foto.getValue()
+        fotos: refs.foto.getValue()
       };
     } else {
       w.manutencao = null;
@@ -1045,13 +1087,15 @@ function stepRevisao(w) {
     card.appendChild(el('<p class="subtle">Nenhuma ocorrência registrada. Tudo certo nesta inspeção. ✅</p>'));
   } else {
     w.ocorrencias.forEach(function (o) {
-      card.appendChild(el('<div class="list-item" style="cursor:default"><span><span class="list-item__title">' + escapeHtml(o.tipo) + '</span><div class="list-item__sub">' + escapeHtml(o.descricao) + '</div></span>' + (o.foto ? '<span>📷</span>' : '') + '</div>'));
+      const qtdFotos = (o.fotos || []).length;
+      card.appendChild(el('<div class="list-item" style="cursor:default"><span><span class="list-item__title">' + escapeHtml(o.tipo) + '</span><div class="list-item__sub">' + escapeHtml(o.descricao) + '</div></span>' + (qtdFotos ? '<span>📷 ' + qtdFotos + '</span>' : '') + '</div>'));
     });
     w.capturas.forEach(function (c) {
       card.appendChild(el('<div class="list-item" style="cursor:default"><span><span class="list-item__title">Captura — ' + escapeHtml(c.armadilha) + '</span><div class="list-item__sub">Qtd: ' + escapeHtml(c.quantidade) + '</div></span></div>'));
     });
     if (w.manutencao) {
-      card.appendChild(el('<div class="list-item" style="cursor:default"><span><span class="list-item__title">🔧 Manutenção — ' + escapeHtml(w.manutencao.tipo) + '</span><div class="list-item__sub">' + escapeHtml(w.manutencao.local) + (w.manutencao.descricao ? ' — ' + escapeHtml(w.manutencao.descricao) : '') + '</div></span><span>📷</span></div>'));
+      const qtdFotosManut = (w.manutencao.fotos || []).length;
+      card.appendChild(el('<div class="list-item" style="cursor:default"><span><span class="list-item__title">🔧 Manutenção — ' + escapeHtml(w.manutencao.tipo) + '</span><div class="list-item__sub">' + escapeHtml(w.manutencao.local) + (w.manutencao.descricao ? ' — ' + escapeHtml(w.manutencao.descricao) : '') + '</div></span>' + (qtdFotosManut ? '<span>📷 ' + qtdFotosManut + '</span>' : '') + '</div>'));
     }
   }
 
@@ -1109,7 +1153,7 @@ function renderBalancaForm(container) {
 
   return {
     validate: function () {
-      return campos.every(function (c) { return !!c.campo.getValue(); }) && !!manutencao.getValue() && !!foto.getValue();
+      return campos.every(function (c) { return !!c.campo.getValue(); }) && !!manutencao.getValue() && foto.getValue().length > 0;
     },
     getResultado: function () { return manutencao.getValue(); },
     getObservacao: function () {
@@ -1118,7 +1162,7 @@ function renderBalancaForm(container) {
       if (obs.getValue()) partes.push('Obs: ' + obs.getValue());
       return partes.join(' | ');
     },
-    getFoto: function () { return foto.getValue(); }
+    getFotos: function () { return foto.getValue(); }
   };
 }
 
@@ -1194,7 +1238,7 @@ function renderChecklist() {
           return {
             item: it.item, especial: true,
             validate: balanca.validate,
-            build: function () { return { item: it.item, resultado: balanca.getResultado(), observacao: balanca.getObservacao(), foto: balanca.getFoto() }; }
+            build: function () { return { item: it.item, resultado: balanca.getResultado(), observacao: balanca.getObservacao(), fotos: balanca.getFotos() }; }
           };
         }
 
@@ -1215,10 +1259,10 @@ function renderChecklist() {
           });
           return {
             item: it.item, especial: true,
-            validate: function () { return yn.getValue() !== null && (!yn.getValue() || (fotoField && !!fotoField.getValue())); },
+            validate: function () { return yn.getValue() !== null && (!yn.getValue() || (fotoField && fotoField.getValue().length > 0)); },
             build: function () {
               const houve = yn.getValue();
-              return { item: it.item, resultado: houve ? 'SUJIDADE' : 'OK', observacao: houve && obsField ? obsField.getValue() : '', foto: houve && fotoField ? fotoField.getValue() : '' };
+              return { item: it.item, resultado: houve ? 'SUJIDADE' : 'OK', observacao: houve && obsField ? obsField.getValue() : '', fotos: houve && fotoField ? fotoField.getValue() : [] };
             }
           };
         }
@@ -1239,9 +1283,40 @@ function renderChecklist() {
         return {
           item: it.item, especial: false,
           validate: function () { return !!sel.getValue() && (sel.getValue() !== 'NECESSITA_MANUTENCAO' || !!(manutField && manutField.getValue())); },
-          build: function () { return { item: it.item, resultado: sel.getValue(), observacao: manutField ? manutField.getValue() : '', foto: foto.getValue() }; }
+          build: function () { return { item: it.item, resultado: sel.getValue(), observacao: manutField ? manutField.getValue() : '', fotos: foto.getValue() }; }
         };
       });
+
+      // Pergunta extra do checklist DIÁRIO (fica embaixo da lista de itens):
+      // "deseja descrever alguma não conformidade encontrada no armazém?" —
+      // separada dos itens fixos de cima (Piso, Sujidade etc.), pra registrar
+      // qualquer outra coisa fora do roteiro. Texto livre + foto opcional.
+      if (w.periodicidade === 'DIARIO') {
+        const ncBox = el('<div class="stack" style="padding-bottom:10px;border-bottom:1px solid var(--line)"></div>');
+        card.appendChild(ncBox);
+        const ncYn = yesNoField(ncBox, 'Deseja descrever alguma não conformidade encontrada no armazém?');
+        const ncSub = el('<div class="stack" style="display:none"></div>');
+        ncBox.appendChild(ncSub);
+        let ncObs = null, ncFoto = null;
+        ncYn.node.addEventListener('change', function () {
+          const val = ncYn.getValue();
+          ncSub.style.display = val ? 'flex' : 'none';
+          ncSub.innerHTML = '';
+          ncObs = null; ncFoto = null;
+          if (val) {
+            ncObs = textField(ncSub, { label: 'Descreva a não conformidade *', multiline: true });
+            ncFoto = photoField(ncSub, { label: 'Foto (opcional)' });
+          }
+        });
+        refs.push({
+          item: 'Não conformidade', especial: true,
+          validate: function () { return ncYn.getValue() !== null && (!ncYn.getValue() || (ncObs && !!ncObs.getValue())); },
+          build: function () {
+            const houve = ncYn.getValue();
+            return { item: 'Não conformidade', resultado: houve ? 'NAO_CONFORME' : 'OK', observacao: houve && ncObs ? ncObs.getValue() : '', fotos: houve && ncFoto ? ncFoto.getValue() : [] };
+          }
+        });
+      }
 
       const btn = el('<button class="btn btn--primary btn--block" style="margin-top:6px">Enviar checklist</button>');
       card.appendChild(btn);
@@ -1361,7 +1436,7 @@ function renderPendenciaDetalhe() {
   card.appendChild(el('<div class="row between"><span class="subtle">Data de abertura</span><strong>' + escapeHtml(p.DATA_ABERTURA) + '</strong></div>'));
   card.appendChild(el('<div class="divider"></div>'));
   card.appendChild(el('<p><strong>Descrição</strong><br>' + escapeHtml(p.DESCRICAO || '—') + '</p>'));
-  if (p.FOTO_ORIGEM) card.appendChild(el('<img class="photo-preview" src="' + p.FOTO_ORIGEM + '">'));
+  if (p.FOTO_ORIGEM) appendHtml(card, fotosGaleria(p.FOTO_ORIGEM));
 
   if (p.STATUS === 'ABERTA' || p.STATUS === 'EM_TRATAMENTO') {
     if (S.usuario.TIPO !== 'ADMIN') {
@@ -1373,10 +1448,10 @@ function renderPendenciaDetalhe() {
       resolveWrap.appendChild(btn);
       btn.onclick = async function () {
         if (!desc.getValue()) { toast('Descreva o que foi feito', true); return; }
-        if (!foto.getValue()) { toast('A foto de comprovação é obrigatória', true); return; }
+        if (!foto.getValue().length) { toast('A foto de comprovação é obrigatória', true); return; }
         btn.disabled = true; btn.textContent = 'Enviando…';
         try {
-          await api('resolverPendencia', { idPendencia: p.ID_PENDENCIA, descricaoSolucao: desc.getValue(), fotoSolucao: foto.getValue() });
+          await api('resolverPendencia', { idPendencia: p.ID_PENDENCIA, descricaoSolucao: desc.getValue(), fotosSolucao: foto.getValue() });
           toast('Solução enviada! Aguardando validação do admin.', false, true);
           go('minhasPendencias');
         } catch (e) { btn.disabled = false; btn.textContent = 'Enviar solução'; }
@@ -1387,7 +1462,7 @@ function renderPendenciaDetalhe() {
   if (p.STATUS === 'AGUARDANDO_VALIDACAO') {
     card.appendChild(el('<div class="divider"></div>'));
     card.appendChild(el('<p><strong>Solução informada</strong><br>' + escapeHtml(p.DESCRICAO_SOLUCAO || '—') + '</p>'));
-    if (p.FOTO_SOLUCAO) card.appendChild(el('<img class="photo-preview" src="' + p.FOTO_SOLUCAO + '">'));
+    if (p.FOTO_SOLUCAO) appendHtml(card, fotosGaleria(p.FOTO_SOLUCAO));
 
     if (S.usuario.TIPO === 'ADMIN') {
       const valWrap = el('<div class="card stack"><h3 class="title-lg">Validar solução</h3></div>');
@@ -1413,7 +1488,7 @@ function renderPendenciaDetalhe() {
   if (p.STATUS === 'FINALIZADA') {
     card.appendChild(el('<div class="divider"></div>'));
     card.appendChild(el('<p><strong>Solução informada</strong><br>' + escapeHtml(p.DESCRICAO_SOLUCAO || '—') + '</p>'));
-    if (p.FOTO_SOLUCAO) card.appendChild(el('<img class="photo-preview" src="' + p.FOTO_SOLUCAO + '">'));
+    if (p.FOTO_SOLUCAO) appendHtml(card, fotosGaleria(p.FOTO_SOLUCAO));
     card.appendChild(el('<div class="divider"></div>'));
     card.appendChild(el('<div class="row between"><span class="subtle">Validado por</span><strong>' + escapeHtml(p.ADMIN_VALIDADOR || '—') + '</strong></div>'));
     card.appendChild(el('<div class="row between"><span class="subtle">Data da validação</span><strong>' + escapeHtml(p.DATA_VALIDACAO || '—') + '</strong></div>'));
@@ -1633,7 +1708,7 @@ async function renderInspecaoDetalheAdmin() {
           '<button type="button" class="btn btn--outline btn--sm" data-role="btnEditar">✏️ Editar</button></div>' +
           '<p class="subtle" data-role="descricaoTexto">' + escapeHtml(o.DESCRICAO) + '</p>' +
           (o.DESCRICAO_ORIGINAL ? '<p class="subtle" style="font-size:11.5px;color:var(--st-risco)">Original: ' + escapeHtml(o.DESCRICAO_ORIGINAL) + '</p>' : '') +
-          (o.FOTO ? '<img class="photo-preview" src="' + escapeHtml(o.FOTO) + '">' : '') +
+          (o.FOTO ? fotosGaleria(o.FOTO) : '') +
           '<div data-role="editWrap" style="display:none"></div>' +
         '</div>'
       );
@@ -1768,7 +1843,7 @@ async function renderRegistrarPendencia() {
         idInspecao: origem ? origem.ID_INSPECAO : '', conferente: origem ? origem.USUARIO : '',
         admin: S.usuario.NOME, origem: origem ? 'INSPECAO' : 'MANUAL',
         tipo: tipoSel.getValue() === 'Outro' && outroField ? outroField.getValue() : tipoSel.getValue(),
-        descricao: descField.getValue(), foto: foto.getValue()
+        descricao: descField.getValue(), fotos: foto.getValue()
       });
       if (tipoSel.getValue() === 'Outro' && outroField && outroField.getValue()) {
         api('adicionarOcorrenciaTipo', { tipo: outroField.getValue() }).catch(function () {});
@@ -2560,7 +2635,7 @@ async function renderManutencaoDetalhe() {
               (h.TIPO !== 'ABERTURA' ? ' <span class="subtle" style="font-weight:400">→ ' + escapeHtml(statusLabel) + '</span>' : '') + '</span>' +
             '<span class="subtle" style="font-size:12px">' + escapeHtml(h.AUTOR || '—') + ' · ' + escapeHtml(h.DATA || '') + '</span>' +
             (h.COMENTARIO ? '<span style="font-size:13px">' + escapeHtml(h.COMENTARIO) + '</span>' : '') +
-            (h.FOTO ? '<img class="photo-preview" style="max-width:200px" src="' + h.FOTO + '">' : '') +
+            (h.FOTO ? fotosGaleria(h.FOTO) : '') +
           '</div>' +
         '</div>'
       );
@@ -2613,10 +2688,10 @@ async function renderManutencaoDetalhe() {
   finalizarWrap.appendChild(btnFinalizar);
   btnFinalizar.onclick = async function () {
     if (!desc.getValue()) { toast('Descreva o que foi feito', true); return; }
-    if (!foto.getValue()) { toast('A foto de comprovação é obrigatória', true); return; }
+    if (!foto.getValue().length) { toast('A foto de comprovação é obrigatória', true); return; }
     btnFinalizar.disabled = true; btnFinalizar.textContent = 'Enviando…';
     try {
-      await api('atualizarStatusManutencao', { idManutencao: m.ID_MANUTENCAO, status: 'FINALIZADA', descricaoConclusao: desc.getValue(), fotoConclusao: foto.getValue(), autor: S.usuario.NOME });
+      await api('atualizarStatusManutencao', { idManutencao: m.ID_MANUTENCAO, status: 'FINALIZADA', descricaoConclusao: desc.getValue(), fotosConclusao: foto.getValue(), autor: S.usuario.NOME });
       toast('Manutenção finalizada!', false, true);
       go('manutencoes');
     } catch (e) { btnFinalizar.disabled = false; btnFinalizar.textContent = '✓ Marcar como finalizada'; }
@@ -2835,7 +2910,7 @@ async function renderMapaGoteiras() {
         detailWrap.innerHTML =
           '<div class="row between"><span class="list-item__title">Goteira · ' + escapeHtml(p.armazem || S.unidade.UNIDADE) + '</span></div>' +
           '<div class="subtle">Registrada em ' + escapeHtml(p.data) + ' por ' + escapeHtml(p.usuario) + '</div>' +
-          (p.foto ? '<img class="photo-preview" src="' + p.foto + '">' : '') +
+          (p.foto ? fotosGaleria(p.foto) : '') +
           '<button type="button" class="btn btn--outline btn--block" data-role="resolver">Marcar como resolvida (remover do mapa)</button>';
         detailWrap.querySelector('[data-role="resolver"]').onclick = async function () {
           await api('resolverGoteiraMapa', { idGoteira: p.idGoteira, usuario: S.usuario.NOME }).catch(function () {});

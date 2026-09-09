@@ -1268,7 +1268,10 @@ function renderChecklist() {
           };
         }
 
-        const sel = selectField(box, { label: 'Situação', options: [{ value: 'OK', label: 'OK' }, { value: 'NECESSITA_MANUTENCAO', label: 'Necessita manutenção' }, { value: 'NAO_REALIZADO', label: 'Não realizado' }] });
+        // Rótulo "Não utilizado" (era "Não realizado") — só o texto exibido
+        // mudou; o valor salvo continua NAO_REALIZADO, então registros
+        // antigos e os dashboards que já filtram por esse valor não mudam.
+        const sel = selectField(box, { label: 'Situação', options: [{ value: 'OK', label: 'OK' }, { value: 'NECESSITA_MANUTENCAO', label: 'Necessita manutenção' }, { value: 'NAO_REALIZADO', label: 'Não utilizado' }] });
         const manutWrap = el('<div style="display:none"></div>');
         box.appendChild(manutWrap);
         let manutField = null;
@@ -1828,32 +1831,99 @@ async function renderRegistrarPendencia() {
     if (tipoSel.getValue() === 'Outro') outroField = textField(outroWrap, { label: 'Descreva a ocorrência' });
   };
 
-  const descWrap = el('<div></div>');
-  card.appendChild(descWrap);
-  const descField = textField(descWrap, { label: 'Descrição adicional (opcional)', multiline: true });
-  const foto = photoField(card, { label: 'Foto/evidência' });
+  // Registro a partir de uma inspeção (vindo do detalhe de uma inspeção) já
+  // está amarrado àquela inspeção específica — continua sendo sempre 1
+  // registro só, sem a opção de quantidade abaixo (essa é só pro manual).
+  if (origem) {
+    const descWrap = el('<div></div>');
+    card.appendChild(descWrap);
+    const descField = textField(descWrap, { label: 'Descrição adicional (opcional)', multiline: true });
+    const foto = photoField(card, { label: 'Foto/evidência' });
 
-  const btn = el('<button class="btn btn--primary btn--block" style="margin-top:6px">Registrar pendência</button>');
+    const btn = el('<button class="btn btn--primary btn--block" style="margin-top:6px">Registrar pendência</button>');
+    card.appendChild(btn);
+    btn.onclick = async function () {
+      if (!armazemSel.getValue()) { toast('Selecione o armazém', true); return; }
+      if (!tipoSel.getValue()) { toast('Selecione a ocorrência', true); return; }
+      btn.disabled = true; btn.textContent = 'Registrando…';
+      try {
+        const data = await api('createPendencia', {
+          unidade: S.unidade.UNIDADE, armazem: armazemSel.getValue(),
+          idInspecao: origem.ID_INSPECAO, conferente: origem.USUARIO,
+          admin: S.usuario.NOME, origem: 'INSPECAO',
+          tipo: tipoSel.getValue() === 'Outro' && outroField ? outroField.getValue() : tipoSel.getValue(),
+          descricao: descField.getValue(), fotos: foto.getValue()
+        });
+        if (tipoSel.getValue() === 'Outro' && outroField && outroField.getValue()) {
+          api('adicionarOcorrenciaTipo', { tipo: outroField.getValue() }).catch(function () {});
+        }
+        toast('Pendência ' + data.idPendencia + ' registrada para ' + (data.responsavel || 'responsável não definido') + '.', false, true);
+        S.pendenciaOrigemInspecao = null;
+        go('dashPendencias');
+      } catch (e) { btn.disabled = false; btn.textContent = 'Registrar pendência'; }
+    };
+    return;
+  }
+
+  // Registro manual (sem inspeção de origem): permite gerar VÁRIOS registros
+  // de uma vez — mesmo padrão já usado no wizard de inspeção pra avaria/risco
+  // (pergunta a quantidade, botão "Gerar formulários", um mini-formulário por
+  // registro). Armazém e ocorrência ficam compartilhados entre os N
+  // registros; cada um tem sua própria descrição e foto. Já gera 1
+  // formulário de cara (o caso mais comum é 1 registro só), então não muda a
+  // experiência de quem só quer registrar uma pendência.
+  const qtdWrap = el('<div class="row" style="gap:8px;align-items:flex-end"></div>');
+  card.appendChild(qtdWrap);
+  const qtdField = textField(qtdWrap, { label: 'Quantos registros deseja fazer?', type: 'number', value: '1' });
+  qtdField.node.style.flex = '1';
+  const btnGerar = el('<button type="button" class="btn btn--outline btn--sm">Gerar formulários</button>');
+  qtdWrap.appendChild(btnGerar);
+
+  const listWrap = el('<div class="stack"></div>');
+  card.appendChild(listWrap);
+  let entries = [];
+
+  function gerarFormularios() {
+    const n = parseInt(qtdField.getValue(), 10);
+    if (!n || n < 1) { toast('Informe um número válido', true); return; }
+    if (n > 30) { toast('No máximo 30 registros de uma vez', true); return; }
+    listWrap.innerHTML = '';
+    entries = [];
+    for (let i = 0; i < n; i++) {
+      const box = el('<div class="card" style="padding:14px;background:#fafbfa"><h3 class="title-lg" style="margin-bottom:8px">Registro ' + (i + 1) + '</h3></div>');
+      listWrap.appendChild(box);
+      const desc = textField(box, { label: 'Descrição adicional (opcional)', multiline: true });
+      const foto = photoField(box, { label: 'Foto/evidência' });
+      entries.push({ desc: desc, foto: foto });
+    }
+  }
+  btnGerar.onclick = gerarFormularios;
+  gerarFormularios();
+
+  const btn = el('<button class="btn btn--primary btn--block" style="margin-top:6px">Registrar pendência(s)</button>');
   card.appendChild(btn);
   btn.onclick = async function () {
     if (!armazemSel.getValue()) { toast('Selecione o armazém', true); return; }
     if (!tipoSel.getValue()) { toast('Selecione a ocorrência', true); return; }
-    btn.disabled = true; btn.textContent = 'Registrando…';
+    if (!entries.length) { toast('Gere pelo menos um formulário', true); return; }
+    const tipoFinal = tipoSel.getValue() === 'Outro' && outroField ? outroField.getValue() : tipoSel.getValue();
+    if (tipoSel.getValue() === 'Outro' && !tipoFinal) { toast('Descreva a ocorrência', true); return; }
+
+    btn.disabled = true; btn.textContent = entries.length > 1 ? 'Registrando ' + entries.length + '…' : 'Registrando…';
     try {
-      const data = await api('createPendencia', {
+      const data = await api('createPendenciasLote', {
         unidade: S.unidade.UNIDADE, armazem: armazemSel.getValue(),
-        idInspecao: origem ? origem.ID_INSPECAO : '', conferente: origem ? origem.USUARIO : '',
-        admin: S.usuario.NOME, origem: origem ? 'INSPECAO' : 'MANUAL',
-        tipo: tipoSel.getValue() === 'Outro' && outroField ? outroField.getValue() : tipoSel.getValue(),
-        descricao: descField.getValue(), fotos: foto.getValue()
+        admin: S.usuario.NOME, origem: 'MANUAL', tipo: tipoFinal,
+        registros: entries.map(function (e) { return { descricao: e.desc.getValue(), fotos: e.foto.getValue() }; })
       });
       if (tipoSel.getValue() === 'Outro' && outroField && outroField.getValue()) {
         api('adicionarOcorrenciaTipo', { tipo: outroField.getValue() }).catch(function () {});
       }
-      toast('Pendência ' + data.idPendencia + ' registrada para ' + (data.responsavel || 'responsável não definido') + '.', false, true);
-      S.pendenciaOrigemInspecao = null;
+      toast(data.quantidade + (data.quantidade === 1 ? ' pendência registrada' : ' pendências registradas') + ' para ' + (data.responsavel || 'responsável não definido') + '.', false, true);
       go('dashPendencias');
-    } catch (e) { btn.disabled = false; btn.textContent = 'Registrar pendência'; }
+    } catch (e) {
+      btn.disabled = false; btn.textContent = 'Registrar pendência(s)';
+    }
   };
 }
 
@@ -3168,6 +3238,55 @@ function evolucaoCard(titulo, registros, getDataStr, getValor) {
   return card;
 }
 
+// Card específico do item "Aspirador de pó" do checklist diário, dentro do
+// Dashboard de limpeza (Lucas pediu um gráfico separado só desse item, mas
+// sem virar mais um item no menu — por isso é uma seção a mais aqui, dentro
+// do dashboard que já existe, reaproveitando os registros que o dashboard
+// geral já carregou, sem chamada extra à API). Some do card quando não há
+// nenhum registro do aspirador no período filtrado.
+const ITEM_ASPIRADOR = 'Aspirador de pó';
+function contarPorCampo_(rows, campo) {
+  const acc = {};
+  rows.forEach(function (r) { const k = r[campo] || 'N/A'; acc[k] = (acc[k] || 0) + 1; });
+  return acc;
+}
+function aspiradorCard(registros) {
+  const doAspirador = registros.filter(function (r) { return r.ITEM === ITEM_ASPIRADOR; });
+  if (!doAspirador.length) return null;
+
+  const ok = doAspirador.filter(function (r) { return r.RESULTADO === 'OK'; });
+  const manutencao = doAspirador.filter(function (r) { return r.RESULTADO === 'NECESSITA_MANUTENCAO'; });
+  const naoUtilizado = doAspirador.filter(function (r) { return r.RESULTADO === 'NAO_REALIZADO'; });
+
+  const card = el('<div class="card stack"><h3 class="title-lg">🧹 Aspirador de pó</h3><p class="subtle" style="margin-top:-6px">Só os registros desse item, no mesmo período filtrado acima</p></div>');
+  card.appendChild(el(
+    '<div class="kpi-grid">' +
+      kpi(doAspirador.length, 'Registros') +
+      kpi(ok.length, 'OK') +
+      kpi(manutencao.length, 'Necessita manutenção') +
+      kpi(naoUtilizado.length, 'Não utilizado') +
+    '</div>'
+  ));
+  const porArmazemOk = contarPorCampo_(ok, 'ARMAZEM');
+  card.appendChild(el('<h3 class="title-lg" style="margin-top:4px">Realizado (OK) por armazém</h3>'));
+  const barrasWrap = el('<div class="stack"></div>');
+  card.appendChild(barrasWrap);
+  const entries = Object.entries(porArmazemOk).sort(function (a, b) { return b[1] - a[1]; });
+  if (!entries.length) {
+    barrasWrap.appendChild(el('<p class="subtle">Nenhuma limpeza de aspirador marcada como OK no período.</p>'));
+  } else {
+    const max = entries[0][1];
+    entries.forEach(function (e) {
+      barrasWrap.appendChild(el(
+        '<div class="bar-row"><span class="label">' + escapeHtml(e[0]) + '</span>' +
+        '<div class="bar-track"><div class="bar-fill" style="width:' + Math.max(4, (e[1] / max) * 100) + '%"></div></div>' +
+        '<span class="bar-val">' + escapeHtml(e[1]) + '</span></div>'
+      ));
+    });
+  }
+  return card;
+}
+
 // Calcula o período imediatamente anterior, com a mesma duração do período
 // selecionado — usado para comparar "esta semana" com "a semana passada" etc.
 function periodoAnteriorRange(range) {
@@ -3283,6 +3402,9 @@ async function renderDashChecklist() {
     body.appendChild(barCard('Por armazém', d.porArmazem));
     body.appendChild(barCard('Por periodicidade', d.porPeriodicidade));
     body.appendChild(evolucaoCard('Evolução dos checklists por data', d.registros));
+
+    const cardAspirador = aspiradorCard(d.registros);
+    if (cardAspirador) body.appendChild(cardAspirador);
 
     if (d.registros.length) {
       const listCard = el('<div class="card stack"><h3 class="title-lg">Checklists recentes</h3></div>');

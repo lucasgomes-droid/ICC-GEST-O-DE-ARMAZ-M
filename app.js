@@ -416,6 +416,7 @@ function render() {
     registrarPendencia: renderRegistrarPendencia,
     dashCarunchos: renderDashCarunchos,
     dashInspecoes: renderDashInspecoes,
+    painelPeriodo: renderPainelPeriodo,
     dashOcorrencias: renderDashOcorrencias,
     manutencoes: renderManutencoes,
     manutencoesConferente: renderManutencoesConferente,
@@ -1607,6 +1608,7 @@ function renderAdminHome() {
     screenHeader('Área administrativa', 'Olá, ' + S.usuario.NOME) +
     '<div class="stack">' +
       menuCard('📅', 'Painel do dia', 'Quais armazéns ainda não fizeram inspeção/limpeza hoje', 'dashInspecoes') +
+      menuCard('📆', 'Painel do período', 'Quantidade de inspeções e checklists não realizados, por armazém, num intervalo de dias', 'painelPeriodo') +
       menuCard('📊', 'Resumo geral', 'Rondas, checklists, capturas e ocorrências — igual ao relatório semanal', 'resumoGeral') +
       menuCard('📄', 'Relatórios', 'Baixar relatórios em CSV (Excel/Sheets)', 'relatorios') +
       menuCard('✅', 'Validação de inspeções', 'Revisar inspeções dos conferentes', 'validacaoInspecoes') +
@@ -1945,6 +1947,99 @@ async function renderDashInspecoes() {
   }
 }
 
+// Painel do período: mesma ideia do Painel do dia, mas somada ao longo de um
+// intervalo de datas (semana/mês/personalizado) em vez de olhar só "hoje" —
+// mostra quantas inspeções e checklists diários FICARAM FALTANDO em cada
+// armazém no período escolhido.
+async function renderPainelPeriodo() {
+  app.appendChild(el(screenHeader('Painel do período', S.unidade.UNIDADE, 'Quantidade de inspeções e checklists diários não realizados, por armazém')));
+
+  const filterWrap = el(
+    '<div class="filters">' +
+      '<select id="fPeriodo">' +
+        '<option value="semana">Esta semana</option>' +
+        '<option value="mes">Este mês</option>' +
+        '<option value="custom">Período personalizado</option>' +
+      '</select>' +
+    '</div>'
+  );
+  app.appendChild(filterWrap);
+
+  const customWrap = el(
+    '<div class="filters" id="customDates" style="display:none">' +
+      '<input type="date" id="fDataInicial">' +
+      '<input type="date" id="fDataFinal">' +
+      '<button class="btn btn--outline btn--sm" id="btnAplicar">Aplicar</button>' +
+    '</div>'
+  );
+  app.appendChild(customWrap);
+
+  const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
+  app.appendChild(body);
+
+  const selPeriodo = document.getElementById('fPeriodo');
+  const customDates = document.getElementById('customDates');
+  selPeriodo.onchange = function () {
+    customDates.style.display = selPeriodo.value === 'custom' ? 'flex' : 'none';
+    if (selPeriodo.value !== 'custom') load();
+  };
+  document.getElementById('btnAplicar').onclick = load;
+
+  async function load() {
+    body.innerHTML = '<p class="subtle">Carregando…</p>';
+    let range = { dataInicial: '', dataFinal: '' };
+    if (selPeriodo.value === 'custom') {
+      const ini = document.getElementById('fDataInicial').value; // yyyy-mm-dd
+      const fim = document.getElementById('fDataFinal').value;
+      if (ini) range.dataInicial = dateToBR(new Date(ini + 'T00:00:00'));
+      if (fim) range.dataFinal = dateToBR(new Date(fim + 'T00:00:00'));
+    } else {
+      range = periodoRange(selPeriodo.value);
+    }
+    const d = await api('getPainelPeriodo', {
+      unidade: S.unidade.UNIDADE, dataInicial: range.dataInicial, dataFinal: range.dataFinal
+    }).catch(function () { return null; });
+    body.innerHTML = '';
+    if (!d) return;
+
+    body.appendChild(el('<p class="subtle">' + escapeHtml(d.dataInicial) + ' até ' + escapeHtml(d.dataFinal) + ' (' + d.diasNoPeriodo + (d.diasNoPeriodo === 1 ? ' dia' : ' dias') + ') · ' + d.totalArmazens + ' armazém(ns) ativo(s)</p>'));
+
+    body.appendChild(el(
+      '<div class="kpi-grid">' +
+        kpi(d.totalInspecoesNaoRealizadas + '/' + d.totalEsperadoInspecoes, 'Inspeções não realizadas') +
+        kpi(d.totalChecklistsNaoRealizados + '/' + d.totalEsperadoChecklists, 'Checklists não realizados') +
+      '</div>'
+    ));
+
+    const listCard = el('<div class="card stack"><h3 class="title-lg">Por armazém</h3><p class="subtle" style="margin-top:-6px">Ordenado do que mais tem pendência para o que menos tem</p></div>');
+    body.appendChild(listCard);
+
+    if (!d.porArmazem.length) {
+      listCard.appendChild(el('<p class="subtle">Nenhum armazém ativo cadastrado.</p>'));
+      return;
+    }
+
+    d.porArmazem.forEach(function (a) {
+      const semPendencia = a.inspecoesNaoRealizadas === 0 && a.checklistsNaoRealizados === 0;
+      const item = el(
+        '<div class="list-item" style="cursor:default;flex-wrap:wrap;gap:8px">' +
+          '<span><span class="list-item__title">' + escapeHtml(a.armazem) + '</span></span>' +
+          '<span class="row" style="gap:6px">' +
+          (semPendencia
+            ? '<span class="tag tag--finalizada">Em dia ✓</span>'
+            : (
+              '<span class="tag ' + (a.inspecoesNaoRealizadas ? 'tag--risco' : 'tag--finalizada') + '">' + a.inspecoesNaoRealizadas + ' inspeção(ões) faltando</span>' +
+              '<span class="tag ' + (a.checklistsNaoRealizados ? 'tag--risco' : 'tag--finalizada') + '">' + a.checklistsNaoRealizados + ' checklist(s) faltando</span>'
+            )) +
+          '</span>' +
+        '</div>'
+      );
+      listCard.appendChild(item);
+    });
+  }
+  load();
+}
+
 // ------------------------- RELATÓRIOS (download em CSV) -------------------------
 // Reaproveita as mesmas actions dos dashboards (já respeitam a unidade da
 // sessão e aceitam os mesmos filtros de período/armazém).
@@ -2227,8 +2322,15 @@ async function renderResumoGeral() {
         kpi(d.sujidades, 'Sujidades (checklist)') +
         kpi(d.capturasTotal, 'Carunchos capturados') +
         kpi(d.diasSemCaptura, 'Dias c/ ronda sem captura') +
+        kpi(d.pendenciasTotal, 'Pendências registradas') +
       '</div>'
     ));
+
+    if (d.scorePendencias) {
+      const cardGeral = scoreGeralCard(d.scorePendencias);
+      if (cardGeral) body.appendChild(cardGeral);
+      body.appendChild(scorePorArmazemCard(d.scorePendencias));
+    }
 
     if (d.diasSemCaptura > 0 && d.diasSemCapturaMaior) {
       const fmtSeq = function (seq) {
@@ -3279,6 +3381,12 @@ async function renderDashPendencias() {
     ));
     if (comparativoHtml) body.appendChild(el('<div style="margin-top:-4px">' + comparativoHtml + ' <span class="subtle" style="font-size:12.5px">em pendências abertas no período</span></div>'));
 
+    if (d.score) {
+      const cardGeral = scoreGeralCard(d.score);
+      if (cardGeral) body.appendChild(cardGeral);
+      body.appendChild(scorePorArmazemCard(d.score));
+    }
+
     body.appendChild(barCard('Por armazém', d.porArmazem));
     body.appendChild(barCard('Por ocorrência', d.porOcorrencia));
     body.appendChild(evolucaoCard('Evolução das pendências por data', d.registros, function (r) { return String(r.DATA_ABERTURA || '').split(' ')[0]; }));
@@ -3306,6 +3414,59 @@ function barCard(title, dataObj) {
       '<div class="bar-row"><span class="label">' + escapeHtml(e[0]) + '</span>' +
       '<div class="bar-track"><div class="bar-fill" style="width:' + Math.max(4, (e[1] / max) * 100) + '%"></div></div>' +
       '<span class="bar-val">' + escapeHtml(e[1]) + '</span></div>'
+    ));
+  });
+  return card;
+}
+
+// ------------------------- SCORE DE PENDÊNCIAS (gráfico) -------------------------
+// Cada armazém começa o período (o mesmo período já filtrado na tela) em
+// 100% e perde 3 pontos por pendência recebida. As mesmas cores/cortes do
+// backend (corDoScore_ em Code.gs — verde ≥80, amarelo 50–79, vermelho <50)
+// só decidem aqui qual variável de cor usar no desenho.
+const SCORE_COR_VAR = { VERDE: 'var(--st-finalizada)', AMARELO: 'var(--st-amarelo)', VERMELHO: 'var(--st-risco)' };
+const SCORE_COR_TAG = { VERDE: 'tag--finalizada', AMARELO: 'tag--amarelo', VERMELHO: 'tag--risco' };
+
+// Card do score combinado (todos os armazéns considerados juntos — respeita
+// o filtro de armazém da tela, se houver) — número grande, colorido pela
+// mesma faixa verde/amarelo/vermelho.
+function scoreGeralCard(score) {
+  if (!score) return null;
+  const cor = SCORE_COR_VAR[score.corGeral] || 'var(--brand)';
+  return el(
+    '<div class="card stack score-geral" style="text-align:center;border-color:' + cor + '">' +
+      '<span class="eyebrow">Score geral · todos os armazéns juntos</span>' +
+      '<span class="score-geral__valor" style="font-family:var(--mono);font-weight:700;color:' + cor + '">' + score.scoreMedioGeral + '%</span>' +
+      '<p class="subtle" style="margin:0">' + score.scoreMedioGeralDivergente + '% de divergência em relação ao 100% inicial (média entre os armazéns)</p>' +
+      '<p class="subtle" style="margin:0"><strong style="color:var(--ink)">' + score.totalPendencias + '</strong> pendência(s) no total · ' + score.totalArmazens + ' armazém(ns) considerado(s)</p>' +
+    '</div>'
+  );
+}
+
+// Card com a barra de score de cada armazém (ordenado de quem recebeu mais
+// pendências para quem recebeu menos), cada barra colorida pela sua própria
+// faixa — assim dá pra ver de relance quais armazéns estão pedindo atenção.
+function scorePorArmazemCard(score) {
+  const card = el('<div class="card stack"><h3 class="title-lg">Score por armazém</h3><p class="subtle" style="margin-top:-6px">Começa em 100% · −3 pontos por pendência recebida · ordenado de quem recebeu mais para quem recebeu menos</p></div>');
+  if (!score || !score.porArmazem.length) {
+    card.appendChild(el('<p class="subtle">Nenhum armazém ativo cadastrado.</p>'));
+    return card;
+  }
+  score.porArmazem.forEach(function (a) {
+    const cor = SCORE_COR_VAR[a.cor] || 'var(--brand)';
+    const tagCls = SCORE_COR_TAG[a.cor] || 'tag--finalizada';
+    card.appendChild(el(
+      '<div class="stack" style="gap:4px">' +
+        '<div class="bar-row">' +
+          '<span class="label">' + escapeHtml(a.armazem) + '</span>' +
+          '<div class="bar-track"><div class="bar-fill" style="width:' + Math.max(4, a.scoreAtual) + '%;background:' + cor + '"></div></div>' +
+          '<span class="bar-val">' + a.scoreAtual + '%</span>' +
+        '</div>' +
+        '<div class="row between" style="padding-left:1px">' +
+          '<span class="subtle" style="font-size:11.5px">' + a.pendencias + ' pendência(s) recebida(s) · ' + a.scoreDivergente + '% de divergência</span>' +
+          '<span class="tag ' + tagCls + '">' + (a.cor === 'VERDE' ? 'Em dia' : a.cor === 'AMARELO' ? 'Atenção' : 'Crítico') + '</span>' +
+        '</div>' +
+      '</div>'
     ));
   });
   return card;

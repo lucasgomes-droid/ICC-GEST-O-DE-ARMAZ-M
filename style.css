@@ -20,6 +20,7 @@
   --st-tratamento:#3b82c4;
   --st-validacao:#8b5cf6;
   --st-finalizada:#2f9e64;
+  --st-amarelo:#d9a520;
   --st-risco:#d64545;
   --radius:10px;
   --radius-lg:16px;
@@ -157,7 +158,14 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .tag--tratamento{background:#e7f0f9;color:var(--st-tratamento)}
 .tag--validacao{background:#f1ecfd;color:var(--st-validacao)}
 .tag--finalizada{background:#e6f6ed;color:var(--st-finalizada)}
+.tag--amarelo{background:#fbf2d9;color:var(--st-amarelo)}
 .tag--risco{background:#fdeceb;color:var(--st-risco)}
+
+/* Score de pendências (Dashboard de pendências / Resumo geral): o número
+   grande do score geral muda de cor conforme a faixa (verde/amarelo/
+   vermelho), igual ao semáforo das barras por armazém logo abaixo. */
+.score-geral{border-width:1.5px}
+.score-geral__valor{font-size:40px;line-height:1}
 
 /* "etiqueta de expedição" — o elemento de assinatura visual do app */
 .shiplabel{
@@ -267,4 +275,5 @@ input,select,textarea{font-family:inherit;font-size:16px}
 
 @media (prefers-reduced-motion: reduce){
   *{animation-duration:.001ms !important;transition-duration:.001ms !important}
+}
 }

@@ -229,6 +229,47 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .bar-fill{height:100%;background:var(--brand);border-radius:6px}
 .bar-val{font-family:var(--mono);width:32px;text-align:right;font-size:12px;color:var(--ink-soft)}
 
+/* ---------- gráficos de barras dos dashboards (cartão escuro) ----------
+   Todos os dashboards (carunchos, limpeza, pendências, ocorrências,
+   manutenções, resumo geral) desenham seus gráficos de barras através da
+   função chartCard() em app.js, que gera este markup. Cor de barra:
+   --chart-accent por padrão (contagem simples), ou uma cor por barra
+   (reaproveitando --st-aberta/--st-tratamento/--st-finalizada/--st-risco/
+   --st-amarelo) quando o gráfico é categórico por status — nesse caso vem
+   sempre acompanhado de uma legenda (.chart-legend), nunca só a cor. */
+:root{
+  --chart-bg:#101826;
+  --chart-grid:#22304a;
+  --chart-text-soft:#8b96ac;
+  --chart-accent:#7cc36a;
+}
+.chart-card{
+  background:var(--chart-bg);border-radius:var(--radius-lg);
+  padding:18px;box-shadow:var(--shadow);
+}
+.chart-card__title{font-size:15px;font-weight:600;color:#fff;margin:0}
+.chart-card__sub{font-size:12px;color:var(--chart-text-soft);margin:2px 0 0}
+.chart-card__empty{color:var(--chart-text-soft);font-size:13px;padding:26px 4px;text-align:center;margin:0}
+
+.chart-cols{
+  display:flex;align-items:flex-end;gap:16px;margin-top:20px;
+  padding-bottom:10px;border-bottom:1px solid var(--chart-grid);
+  overflow-x:auto;
+}
+.chart-col{display:flex;flex-direction:column;align-items:center;gap:6px;flex:1 0 auto;min-width:44px}
+.chart-col__val{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap}
+.chart-col__barwrap{height:150px;width:100%;max-width:36px;display:flex;align-items:flex-end}
+.chart-col__bar{width:100%;border-radius:5px 5px 0 0;min-height:3px;transition:height .3s ease}
+.chart-col__label{
+  font-size:11px;color:var(--chart-text-soft);text-align:center;line-height:1.25;
+  max-width:78px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+}
+.chart-col__sub{font-size:10px;color:var(--chart-text-soft);opacity:.85;text-align:center;margin-top:-2px}
+
+.chart-legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:14px}
+.chart-legend__item{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--chart-text-soft)}
+.chart-legend__swatch{width:10px;height:10px;border-radius:3px;flex-shrink:0}
+
 .report-table{border-collapse:collapse;width:100%;font-size:12.5px;min-width:600px}
 .report-table th,.report-table td{border:1px solid var(--line);padding:6px 8px;text-align:left;white-space:nowrap}
 .report-table th{background:var(--paper);font-weight:600;color:var(--ink-soft);font-size:11px;text-transform:uppercase;letter-spacing:.03em}

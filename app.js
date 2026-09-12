@@ -3225,16 +3225,61 @@ function evolucaoCard(titulo, registros, getDataStr, getValor) {
     const da = parseBR(a), db = parseBR(b);
     return (da ? da.getTime() : 0) - (db ? db.getTime() : 0);
   });
-  const max = chaves.length ? Math.max.apply(null, chaves.map(function (k) { return acc[k]; })) : 1;
-  const card = el('<div class="card stack"><h3 class="title-lg">' + escapeHtml(titulo) + '</h3></div>');
-  if (!chaves.length) { card.appendChild(el('<p class="subtle">Sem dados no período.</p>')); return card; }
-  chaves.forEach(function (k) {
-    card.appendChild(el(
-      '<div class="bar-row"><span class="label">' + escapeHtml(k) + '</span>' +
-      '<div class="bar-track"><div class="bar-fill" style="width:' + Math.max(4, (acc[k] / max) * 100) + '%"></div></div>' +
-      '<span class="bar-val">' + escapeHtml(acc[k]) + '</span></div>'
+  const entries = chaves.map(function (k) { return [k, acc[k]]; });
+  return chartCard(titulo, null, entries);
+}
+
+// ------------------------- GRÁFICOS DE BARRAS (dashboards) -------------------------
+// Motor único por trás de todo gráfico de barras dos dashboards (carunchos,
+// limpeza, pendências, ocorrências, manutenções, resumo geral): cartão
+// escuro, barras verticais com o valor no topo e o rótulo da categoria
+// embaixo — no lugar das barras horizontais claras que o app usava antes.
+//
+// `entries` é uma lista de [label, valor] (ordem já decidida por quem chama
+// — barCard ordena do maior pro menor; evolucaoCard mantém ordem
+// cronológica). `opts.colorFor(label, valor, i)`, quando informado, pinta
+// cada barra com uma cor própria (usado só quando a cor É a informação,
+// como o score por armazém); nesses casos `opts.legend` é obrigatório, pra
+// nunca depender só da cor. `opts.subFor(label, valor, i)` adiciona uma
+// segunda linha pequena abaixo do rótulo (ex: "3 pendência(s)").
+function chartCard(title, subtitle, entries, opts) {
+  opts = opts || {};
+  const card = el(
+    '<div class="chart-card">' +
+      '<div class="chart-card__head">' +
+        '<h3 class="chart-card__title">' + escapeHtml(title) + '</h3>' +
+        (subtitle ? '<p class="chart-card__sub">' + escapeHtml(subtitle) + '</p>' : '') +
+      '</div>' +
+    '</div>'
+  );
+  if (!entries.length) {
+    card.appendChild(el('<p class="chart-card__empty">' + escapeHtml(opts.emptyText || 'Sem dados no período.') + '</p>'));
+    return card;
+  }
+  const max = opts.max || Math.max.apply(null, entries.map(function (e) { return Number(e[1]) || 0; })) || 1;
+  const cols = el('<div class="chart-cols"></div>');
+  entries.forEach(function (e, i) {
+    const label = e[0], val = Number(e[1]) || 0;
+    const pct = Math.max(3, (val / max) * 100);
+    const color = opts.colorFor ? opts.colorFor(label, val, i) : 'var(--chart-accent)';
+    const sub = opts.subFor ? opts.subFor(label, val, i) : '';
+    cols.appendChild(el(
+      '<div class="chart-col">' +
+        '<span class="chart-col__val">' + escapeHtml(val) + '</span>' +
+        '<div class="chart-col__barwrap"><div class="chart-col__bar" style="height:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="chart-col__label" title="' + escapeHtml(label) + '">' + escapeHtml(label) + '</span>' +
+        (sub ? '<span class="chart-col__sub">' + escapeHtml(sub) + '</span>' : '') +
+      '</div>'
     ));
   });
+  card.appendChild(cols);
+  if (opts.legend && opts.legend.length) {
+    card.appendChild(el(
+      '<div class="chart-legend">' +
+        opts.legend.map(function (l) { return '<span class="chart-legend__item"><span class="chart-legend__swatch" style="background:' + l.color + '"></span>' + escapeHtml(l.label) + '</span>'; }).join('') +
+      '</div>'
+    ));
+  }
   return card;
 }
 
@@ -3268,22 +3313,7 @@ function aspiradorCard(registros) {
     '</div>'
   ));
   const porArmazemOk = contarPorCampo_(ok, 'ARMAZEM');
-  card.appendChild(el('<h3 class="title-lg" style="margin-top:4px">Realizado (OK) por armazém</h3>'));
-  const barrasWrap = el('<div class="stack"></div>');
-  card.appendChild(barrasWrap);
-  const entries = Object.entries(porArmazemOk).sort(function (a, b) { return b[1] - a[1]; });
-  if (!entries.length) {
-    barrasWrap.appendChild(el('<p class="subtle">Nenhuma limpeza de aspirador marcada como OK no período.</p>'));
-  } else {
-    const max = entries[0][1];
-    entries.forEach(function (e) {
-      barrasWrap.appendChild(el(
-        '<div class="bar-row"><span class="label">' + escapeHtml(e[0]) + '</span>' +
-        '<div class="bar-track"><div class="bar-fill" style="width:' + Math.max(4, (e[1] / max) * 100) + '%"></div></div>' +
-        '<span class="bar-val">' + escapeHtml(e[1]) + '</span></div>'
-      ));
-    });
-  }
+  card.appendChild(barCard('Realizado (OK) por armazém', porArmazemOk, { emptyText: 'Nenhuma limpeza de aspirador marcada como OK no período.' }));
   return card;
 }
 
@@ -3526,19 +3556,9 @@ function kpi(value, label) {
   return '<div class="kpi"><span class="badge-count">' + escapeHtml(value) + '</span><span class="subtle">' + escapeHtml(label) + '</span></div>';
 }
 
-function barCard(title, dataObj) {
+function barCard(title, dataObj, opts) {
   const entries = Object.entries(dataObj || {}).sort(function (a, b) { return b[1] - a[1]; });
-  const max = entries.length ? entries[0][1] : 1;
-  const card = el('<div class="card stack"><h3 class="title-lg">' + escapeHtml(title) + '</h3></div>');
-  if (!entries.length) { card.appendChild(el('<p class="subtle">Sem dados no período.</p>')); return card; }
-  entries.forEach(function (e) {
-    card.appendChild(el(
-      '<div class="bar-row"><span class="label">' + escapeHtml(e[0]) + '</span>' +
-      '<div class="bar-track"><div class="bar-fill" style="width:' + Math.max(4, (e[1] / max) * 100) + '%"></div></div>' +
-      '<span class="bar-val">' + escapeHtml(e[1]) + '</span></div>'
-    ));
-  });
-  return card;
+  return chartCard(title, null, entries, opts);
 }
 
 // ------------------------- SCORE DE PENDÊNCIAS (gráfico) -------------------------
@@ -3569,27 +3589,28 @@ function scoreGeralCard(score) {
 // pendências para quem recebeu menos), cada barra colorida pela sua própria
 // faixa — assim dá pra ver de relance quais armazéns estão pedindo atenção.
 function scorePorArmazemCard(score) {
-  const card = el('<div class="card stack"><h3 class="title-lg">Score por armazém</h3><p class="subtle" style="margin-top:-6px">Começa em 100% · −3 pontos por pendência recebida · ordenado de quem recebeu mais para quem recebeu menos</p></div>');
   if (!score || !score.porArmazem.length) {
-    card.appendChild(el('<p class="subtle">Nenhum armazém ativo cadastrado.</p>'));
-    return card;
+    const empty = el('<div class="chart-card"><h3 class="chart-card__title">Score por armazém</h3></div>');
+    empty.appendChild(el('<p class="chart-card__empty">Nenhum armazém ativo cadastrado.</p>'));
+    return empty;
   }
-  score.porArmazem.forEach(function (a) {
-    const cor = SCORE_COR_VAR[a.cor] || 'var(--brand)';
-    const tagCls = SCORE_COR_TAG[a.cor] || 'tag--finalizada';
-    card.appendChild(el(
-      '<div class="stack" style="gap:4px">' +
-        '<div class="bar-row">' +
-          '<span class="label">' + escapeHtml(a.armazem) + '</span>' +
-          '<div class="bar-track"><div class="bar-fill" style="width:' + Math.max(4, a.scoreAtual) + '%;background:' + cor + '"></div></div>' +
-          '<span class="bar-val">' + a.scoreAtual + '%</span>' +
-        '</div>' +
-        '<div class="row between" style="padding-left:1px">' +
-          '<span class="subtle" style="font-size:11.5px">' + a.pendencias + ' pendência(s) recebida(s) · ' + a.scoreDivergente + '% de divergência</span>' +
-          '<span class="tag ' + tagCls + '">' + (a.cor === 'VERDE' ? 'Em dia' : a.cor === 'AMARELO' ? 'Atenção' : 'Crítico') + '</span>' +
-        '</div>' +
-      '</div>'
-    ));
-  });
+  const entries = score.porArmazem.map(function (a) { return [a.armazem, a.scoreAtual, a]; });
+  const card = chartCard(
+    'Score por armazém',
+    'Começa em 100% · −3 pontos por pendência recebida · ordenado de quem recebeu mais para quem recebeu menos',
+    entries,
+    {
+      max: 100,
+      colorFor: function (label, val, i) { return SCORE_COR_VAR[entries[i][2].cor] || 'var(--brand)'; },
+      subFor: function (label, val, i) { return entries[i][2].pendencias + ' pend.'; },
+      legend: [
+        { color: SCORE_COR_VAR.VERDE, label: 'Em dia (≥80%)' },
+        { color: SCORE_COR_VAR.AMARELO, label: 'Atenção (50–79%)' },
+        { color: SCORE_COR_VAR.VERMELHO, label: 'Crítico (<50%)' }
+      ]
+    }
+  );
+  // o valor mostrado no topo de cada barra é o score (%), não a contagem crua
+  card.querySelectorAll('.chart-col__val').forEach(function (v, i) { v.textContent = entries[i][1] + '%'; });
   return card;
 }

@@ -422,6 +422,7 @@ function render() {
     manutencoesConferente: renderManutencoesConferente,
     mapaCapturas: renderMapaCapturas,
     mapaGoteiras: renderMapaGoteiras,
+    novaGoteira: renderNovaGoteira,
     resumoGeral: renderResumoGeral,
     manutencaoDetalhe: renderManutencaoDetalhe,
     relatorios: renderRelatorios,
@@ -590,7 +591,7 @@ function renderConferenteHome() {
       menuCard('🧹', 'Checklist de limpeza', 'Diário, semanal, mensal ou anual', 'checklist') +
       menuCard('📋', 'Minhas pendências', 'Ver e resolver pendências direcionadas a você', 'minhasPendencias') +
       menuCard('🔧', 'Manutenções', 'Acompanhar o andamento das manutenções da unidade', 'manutencoesConferente') +
-      menuCard('☔', 'Mapa de goteiras', 'Ver e resolver goteiras marcadas no mapa', 'mapaGoteiras') +
+      menuCard('☔', 'Mapa de goteiras', 'Ver, adicionar e resolver goteiras marcadas no mapa', 'mapaGoteiras') +
       menuCard('🕘', 'Histórico', 'Suas inspeções e checklists anteriores', 'historico') +
     '</div>'
   );
@@ -702,6 +703,113 @@ function stepSimNao(w, opts) {
   };
 }
 
+// Componente reutilizável: mostra o seletor de mapa (quando há mais de um),
+// deixa o usuário tocar nele N vezes pra marcar pontos — com "Desfazer
+// última" e "Confirmar posições" — e, ao confirmar, gera um mini-formulário
+// (observação + foto obrigatória) para cada ponto marcado. Usado tanto pela
+// goteira dentro da inspeção (stepGoteira) quanto pelo registro avulso de
+// goteiras (renderNovaGoteira), pra manter a mesma experiência de marcação
+// nos dois fluxos em vez de duplicar a lógica de toque no mapa duas vezes.
+// opts: { unidade, quantidade, itemLabel, onPontosAlterados(resultado) }
+// onPontosAlterados é chamado com `null` sempre que a marcação é desfeita ou
+// reiniciada, e com `{ mapa, entries }` quando os N pontos são confirmados
+// (entries: [{ ponto, obs, foto }], mesmo formato usado pelos dois fluxos).
+async function montarMarcadorDePontos(container, opts) {
+  const n = opts.quantidade;
+  const itemLabel = opts.itemLabel || 'Ponto';
+  container.innerHTML = '<p class="subtle">Carregando mapa…</p>';
+  const mapas = await api('getMapasDisponiveis', { unidade: opts.unidade }).catch(function () { return []; });
+  if (!mapas.length) {
+    container.innerHTML = '<p class="subtle">Nenhum mapa cadastrado para esta unidade — fale com o administrador antes de continuar.</p>';
+    return;
+  }
+  container.innerHTML = '';
+
+  let mapaAtual = mapas[0];
+  if (mapas.length > 1) {
+    const selWrap = el('<div class="filters"></div>');
+    container.appendChild(selWrap);
+    const selEl = el('<select>' + mapas.map(function (m) { return '<option value="' + escapeHtml(m) + '">' + escapeHtml(MAPA_LABEL[m] || m) + '</option>'; }).join('') + '</select>');
+    selWrap.appendChild(selEl);
+    selEl.onchange = function () { mapaAtual = selEl.value; renderMapaTap(); };
+  }
+
+  const statusLine = el('<p class="subtle" style="margin:0"></p>');
+  container.appendChild(statusLine);
+  const mapBox = el('<div class="card" style="padding:0;overflow:hidden;position:relative"></div>');
+  container.appendChild(mapBox);
+  const btnRow = el('<div class="row" style="gap:8px"></div>');
+  const btnDesfazer = el('<button type="button" class="btn btn--outline btn--sm">Desfazer última</button>');
+  const btnConfirmarPontos = el('<button type="button" class="btn btn--primary btn--sm" disabled>Confirmar posições</button>');
+  btnRow.appendChild(btnDesfazer); btnRow.appendChild(btnConfirmarPontos);
+  container.appendChild(btnRow);
+  const formsWrap = el('<div class="stack"></div>');
+  container.appendChild(formsWrap);
+
+  let pontos = [];
+  let mapContainer, img;
+
+  function renderMapaTap() {
+    pontos = [];
+    mapBox.innerHTML = '';
+    formsWrap.innerHTML = '';
+    opts.onPontosAlterados(null);
+    mapContainer = el('<div style="position:relative;width:100%;line-height:0"></div>');
+    img = el('<img src="assets/mapas/' + mapaAtual + '" style="width:100%;display:block" alt="Mapa">');
+    mapContainer.appendChild(img);
+    mapBox.appendChild(mapContainer);
+    atualizarStatus();
+    mapContainer.onclick = function (e) {
+      if (e.target !== img) return; // ignora clique em cima de um marcador já colocado
+      if (pontos.length >= n) { toast('Você já marcou ' + n + ' ' + itemLabel.toLowerCase() + '(s). Use "Desfazer última" se precisar corrigir.', true); return; }
+      const rect = img.getBoundingClientRect();
+      const xPct = ((e.clientX - rect.left) / rect.width) * 100;
+      const yPct = ((e.clientY - rect.top) / rect.height) * 100;
+      pontos.push({ xPct: xPct.toFixed(2), yPct: yPct.toFixed(2) });
+      desenharMarcadores();
+      atualizarStatus();
+    };
+  }
+  function desenharMarcadores() {
+    mapContainer.querySelectorAll('[data-marcador]').forEach(function (m) { m.remove(); });
+    pontos.forEach(function (p, i) {
+      const marker = el(
+        '<div data-marcador style="position:absolute;left:' + p.xPct + '%;top:' + p.yPct + '%;transform:translate(-50%,-50%);' +
+        'width:24px;height:24px;border-radius:50%;background:var(--st-tratamento);border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.4);' +
+        'color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center">' + (i + 1) + '</div>'
+      );
+      mapContainer.appendChild(marker);
+    });
+  }
+  function atualizarStatus() {
+    statusLine.textContent = pontos.length + ' de ' + n + ' marcadas — toque no mapa para marcar cada ' + itemLabel.toLowerCase();
+    btnDesfazer.disabled = pontos.length === 0;
+    btnConfirmarPontos.disabled = pontos.length !== n;
+  }
+  btnDesfazer.onclick = function () {
+    pontos.pop();
+    formsWrap.innerHTML = '';
+    opts.onPontosAlterados(null);
+    desenharMarcadores();
+    atualizarStatus();
+    btnConfirmarPontos.disabled = pontos.length !== n;
+  };
+
+  btnConfirmarPontos.onclick = function () {
+    formsWrap.innerHTML = '';
+    const entries = [];
+    pontos.forEach(function (p, i) {
+      const box = el('<div class="card" style="padding:14px;background:#fafbfa"><h3 class="title-lg" style="margin-bottom:8px">' + escapeHtml(itemLabel) + ' ' + (i + 1) + '</h3></div>');
+      formsWrap.appendChild(box);
+      const obs = textField(box, { label: 'Observação (opcional)', multiline: true });
+      const foto = photoField(box, { label: 'Foto', required: true });
+      entries.push({ ponto: p, obs: obs, foto: foto });
+    });
+    opts.onPontosAlterados({ mapa: mapaAtual, entries: entries });
+  };
+  renderMapaTap();
+}
+
 // Passo especial de goteira: em vez de digitar rua/baia manualmente, o
 // conferente toca na planta baixa do armazém (mesma imagem do mapa de
 // capturas) para marcar a posição exata de cada goteira encontrada. Só
@@ -740,97 +848,13 @@ function stepGoteira(w) {
       if (!n || n < 1) { toast('Informe um número válido', true); return; }
       entries = null;
       mapaConfirmado = null;
-      mapaArea.innerHTML = '<p class="subtle">Carregando mapa…</p>';
-      const mapas = await api('getMapasDisponiveis', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
-      if (!mapas.length) {
-        mapaArea.innerHTML = '<p class="subtle">Nenhum mapa cadastrado para esta unidade — fale com o administrador antes de continuar.</p>';
-        return;
-      }
-      mapaArea.innerHTML = '';
-
-      let mapaAtual = mapas[0];
-      if (mapas.length > 1) {
-        const selWrap = el('<div class="filters"></div>');
-        mapaArea.appendChild(selWrap);
-        const selEl = el('<select>' + mapas.map(function (m) { return '<option value="' + escapeHtml(m) + '">' + escapeHtml(MAPA_LABEL[m] || m) + '</option>'; }).join('') + '</select>');
-        selWrap.appendChild(selEl);
-        selEl.onchange = function () { mapaAtual = selEl.value; renderMapaTap(); };
-      }
-
-      const statusLine = el('<p class="subtle" style="margin:0"></p>');
-      mapaArea.appendChild(statusLine);
-      const mapBox = el('<div class="card" style="padding:0;overflow:hidden;position:relative"></div>');
-      mapaArea.appendChild(mapBox);
-      const btnRow = el('<div class="row" style="gap:8px"></div>');
-      const btnDesfazer = el('<button type="button" class="btn btn--outline btn--sm">Desfazer última</button>');
-      const btnConfirmarPontos = el('<button type="button" class="btn btn--primary btn--sm" disabled>Confirmar posições</button>');
-      btnRow.appendChild(btnDesfazer); btnRow.appendChild(btnConfirmarPontos);
-      mapaArea.appendChild(btnRow);
-      const formsWrap = el('<div class="stack"></div>');
-      mapaArea.appendChild(formsWrap);
-
-      let pontos = [];
-      let mapContainer, img;
-
-      function renderMapaTap() {
-        pontos = [];
-        mapBox.innerHTML = '';
-        formsWrap.innerHTML = '';
-        entries = null;
-        mapContainer = el('<div style="position:relative;width:100%;line-height:0"></div>');
-        img = el('<img src="assets/mapas/' + mapaAtual + '" style="width:100%;display:block" alt="Mapa">');
-        mapContainer.appendChild(img);
-        mapBox.appendChild(mapContainer);
-        atualizarStatus();
-        mapContainer.onclick = function (e) {
-          if (e.target !== img) return; // ignora clique em cima de um marcador já colocado
-          if (pontos.length >= n) { toast('Você já marcou ' + n + ' goteira(s). Use "Desfazer última" se precisar corrigir.', true); return; }
-          const rect = img.getBoundingClientRect();
-          const xPct = ((e.clientX - rect.left) / rect.width) * 100;
-          const yPct = ((e.clientY - rect.top) / rect.height) * 100;
-          pontos.push({ xPct: xPct.toFixed(2), yPct: yPct.toFixed(2) });
-          desenharMarcadores();
-          atualizarStatus();
-        };
-      }
-      function desenharMarcadores() {
-        mapContainer.querySelectorAll('[data-marcador]').forEach(function (m) { m.remove(); });
-        pontos.forEach(function (p, i) {
-          const marker = el(
-            '<div data-marcador style="position:absolute;left:' + p.xPct + '%;top:' + p.yPct + '%;transform:translate(-50%,-50%);' +
-            'width:24px;height:24px;border-radius:50%;background:var(--st-tratamento);border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.4);' +
-            'color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center">' + (i + 1) + '</div>'
-          );
-          mapContainer.appendChild(marker);
-        });
-      }
-      function atualizarStatus() {
-        statusLine.textContent = pontos.length + ' de ' + n + ' marcadas — toque no mapa para marcar cada goteira';
-        btnDesfazer.disabled = pontos.length === 0;
-        btnConfirmarPontos.disabled = pontos.length !== n;
-      }
-      btnDesfazer.onclick = function () {
-        pontos.pop();
-        entries = null;
-        formsWrap.innerHTML = '';
-        desenharMarcadores();
-        atualizarStatus();
-        btnConfirmarPontos.disabled = pontos.length !== n;
-      };
-
-      btnConfirmarPontos.onclick = function () {
-        mapaConfirmado = mapaAtual;
-        formsWrap.innerHTML = '';
-        entries = [];
-        pontos.forEach(function (p, i) {
-          const box = el('<div class="card" style="padding:14px;background:#fafbfa"><h3 class="title-lg" style="margin-bottom:8px">Goteira ' + (i + 1) + '</h3></div>');
-          formsWrap.appendChild(box);
-          const obs = textField(box, { label: 'Observação (opcional)', multiline: true });
-          const foto = photoField(box, { label: 'Foto', required: true });
-          entries.push({ ponto: p, obs: obs, foto: foto });
-        });
-      };
-      renderMapaTap();
+      await montarMarcadorDePontos(mapaArea, {
+        unidade: S.unidade.UNIDADE, quantidade: n, itemLabel: 'Goteira',
+        onPontosAlterados: function (resultado) {
+          if (resultado) { mapaConfirmado = resultado.mapa; entries = resultado.entries; }
+          else { mapaConfirmado = null; entries = null; }
+        }
+      });
     };
   });
 
@@ -1621,7 +1645,7 @@ function renderAdminHome() {
       menuCard('⚠️', 'Ocorrências da inspeção', 'Avaria, goteira e risco de queda/tombamento por armazém', 'dashOcorrencias') +
       menuCard('🔧', 'Manutenções', 'Itens pendentes e concluídos, por armazém', 'manutencoes') +
       menuCard('🗺️', 'Mapa de capturas', 'Visualização espacial das armadilhas', 'mapaCapturas') +
-      menuCard('☔', 'Mapa de goteiras', 'Pontos marcados pelos conferentes na inspeção', 'mapaGoteiras') +
+      menuCard('☔', 'Mapa de goteiras', 'Pontos marcados na inspeção ou adicionados a qualquer momento', 'mapaGoteiras') +
       menuCard('🧹', 'Dashboard de limpeza', 'Checklists realizados e pendentes', 'dashChecklist') +
     '</div>'
   );
@@ -3027,11 +3051,18 @@ async function renderMapaCapturas() {
 // ------------------------- MAPA DE GOTEIRAS -------------------------
 // Mesma planta baixa do mapa de capturas, mas aqui os pontos não têm posição
 // numerada fixa: o conferente toca livremente no mapa durante a inspeção
-// (ver stepGoteira) e o ponto fica salvo até alguém marcar como resolvida.
-// Administradores e conferentes têm o mesmo acesso — só a unidade separa.
+// (ver stepGoteira) OU a qualquer momento fora dela (ver renderNovaGoteira,
+// logo abaixo — pensado pro caso de chover DEPOIS que a inspeção do dia já
+// foi feita, sem precisar abrir uma inspeção nova só pra marcar o ponto) e o
+// ponto fica salvo até alguém marcar como resolvida. Administradores e
+// conferentes têm o mesmo acesso — só a unidade separa.
 
 async function renderMapaGoteiras() {
-  appendHtml(app, screenHeader('Mapa de goteiras', S.unidade.UNIDADE, 'Pontos marcados pelos conferentes durante a inspeção'));
+  appendHtml(app, screenHeader('Mapa de goteiras', S.unidade.UNIDADE, 'Pontos marcados na inspeção ou adicionados a qualquer momento'));
+
+  const btnNova = el('<button type="button" class="btn btn--primary btn--sm" style="align-self:flex-start;margin-bottom:8px">☔ Adicionar novas goteiras</button>');
+  app.appendChild(btnNova);
+  btnNova.onclick = function () { go('novaGoteira'); };
 
   const mapas = await api('getMapasDisponiveis', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
   if (!mapas.length) {
@@ -3095,6 +3126,73 @@ async function renderMapaGoteiras() {
     });
   }
   load();
+}
+
+// Registro de goteira(s) FORA do fluxo de inspeção: pensado pro caso de
+// chover depois que a inspeção do dia já foi feita — sem isto, o único
+// jeito de marcar o ponto no mapa seria abrir uma inspeção nova só pra isso,
+// o que não é prático. Mesmo "gerador de quantidade" já usado na inspeção
+// (stepGoteira) e no registro manual de pendência (renderRegistrarPendencia):
+// pergunta quantas, marca no mapa (reaproveitando montarMarcadorDePontos) e
+// gera um mini-formulário (observação + foto obrigatória) por ponto.
+async function renderNovaGoteira() {
+  appendHtml(app, screenHeader('Mapa de goteiras', 'Adicionar novas goteiras', 'Registre pontos encontrados a qualquer momento — não precisa esperar a próxima inspeção'));
+  const card = el('<div class="card stack"></div>');
+  app.appendChild(card);
+
+  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const armazemSel = selectField(card, { label: 'Armazém', options: armazens.map(function (a) { return { value: a.ARMAZEM, label: a.ARMAZEM }; }) });
+
+  const qtdWrap = el('<div class="row" style="gap:8px;align-items:flex-end"></div>');
+  card.appendChild(qtdWrap);
+  const qtdField = textField(qtdWrap, { label: 'Quantas novas goteiras deseja adicionar?', type: 'number', value: '1' });
+  qtdField.node.style.flex = '1';
+  const btnMapa = el('<button type="button" class="btn btn--outline btn--sm">Marcar no mapa</button>');
+  qtdWrap.appendChild(btnMapa);
+
+  const mapaArea = el('<div class="stack"></div>');
+  card.appendChild(mapaArea);
+
+  let resultado = null; // { mapa, entries } — preenchido só depois de confirmar as posições no mapa
+
+  btnMapa.onclick = async function () {
+    if (!armazemSel.getValue()) { toast('Selecione o armazém antes de marcar no mapa', true); return; }
+    const n = parseInt(qtdField.getValue(), 10);
+    if (!n || n < 1) { toast('Informe um número válido', true); return; }
+    resultado = null;
+    await montarMarcadorDePontos(mapaArea, {
+      unidade: S.unidade.UNIDADE, quantidade: n, itemLabel: 'Goteira',
+      onPontosAlterados: function (r) { resultado = r; }
+    });
+  };
+
+  const btnEnviar = el('<button class="btn btn--primary btn--block" style="margin-top:6px">Registrar goteira(s)</button>');
+  card.appendChild(btnEnviar);
+  const btnCancelar = el('<button class="btn btn--outline btn--block">Cancelar</button>');
+  card.appendChild(btnCancelar);
+  btnCancelar.onclick = function () { go('mapaGoteiras'); };
+
+  btnEnviar.onclick = async function () {
+    if (!armazemSel.getValue()) { toast('Selecione o armazém', true); return; }
+    if (!resultado || !resultado.entries.length) { toast('Marque as goteiras no mapa e confirme as posições', true); return; }
+    for (const e of resultado.entries) {
+      if (!e.foto.getValue().length) { toast('A foto é obrigatória em todas as goteiras marcadas', true); return; }
+    }
+    btnEnviar.disabled = true; btnEnviar.textContent = 'Registrando…';
+    try {
+      await api('createGoteirasAvulsas', {
+        unidade: S.unidade.UNIDADE, idUsuario: S.usuario.ID_USUARIO, usuario: S.usuario.NOME,
+        armazem: armazemSel.getValue(), mapa: resultado.mapa,
+        pontos: resultado.entries.map(function (e) {
+          return { xPct: e.ponto.xPct, yPct: e.ponto.yPct, observacao: e.obs.getValue(), fotos: e.foto.getValue() };
+        })
+      });
+      toast(resultado.entries.length + (resultado.entries.length === 1 ? ' goteira registrada!' : ' goteiras registradas!'), false, true);
+      go('mapaGoteiras');
+    } catch (e) {
+      btnEnviar.disabled = false; btnEnviar.textContent = 'Registrar goteira(s)';
+    }
+  };
 }
 
 async function renderDashCarunchos() {

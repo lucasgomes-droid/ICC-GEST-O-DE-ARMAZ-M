@@ -223,6 +223,17 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .kpi .badge-count{display:block}
 .kpi .subtle{margin-top:2px}
 
+/* KPI clicável (vira aba de filtro) — usado no Dashboard de pendências
+   pra filtrar a lista "Pendências recentes" por status sem sair da tela.
+   Continua parecendo um KPI normal quando não está ativo. */
+button.kpi.kpi--clicavel{
+  width:100%;text-align:left;cursor:pointer;-webkit-appearance:none;appearance:none;
+  transition:border-color .15s ease, background .15s ease;
+}
+.kpi--clicavel:hover{border-color:var(--brand)}
+.kpi--clicavel.is-active{border-color:var(--brand);background:#eef5e7}
+.kpi--clicavel.is-active .badge-count{color:var(--brand-dark)}
+
 .bar-row{display:flex;align-items:center;gap:10px;font-size:13px}
 .bar-row .label{width:110px;flex-shrink:0;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bar-track{flex:1;background:#eef0ef;border-radius:6px;height:10px;overflow:hidden}

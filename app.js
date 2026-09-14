@@ -3675,12 +3675,24 @@ async function renderDashPendencias() {
       }
     }
 
-    body.appendChild(el(
-      '<div class="kpi-grid">' +
-        kpi(d.abertas, 'Abertas') + kpi(d.emTratamento, 'Em tratamento') +
-        kpi(d.aguardandoValidacao, 'Aguard. validação') + kpi(d.finalizadas, 'Finalizadas') +
-      '</div>'
-    ));
+    // Os 4 KPIs (Abertas/Em tratamento/Aguard. validação/Finalizadas) agora
+    // são abas clicáveis: clicar numa filtra a lista "Pendências recentes"
+    // logo abaixo só pra aquele status (clicar de novo na mesma, ou em "Ver
+    // todas", limpa o filtro). Os números continuam vindo prontos do
+    // backend (já filtrados por período/armazém) — só a lista é refiltrada
+    // no navegador, sem nova chamada à API. O gráfico de score continua
+    // somando QUALQUER status (é a definição documentada do score — não
+    // muda com essa aba).
+    let filtroStatus = null;
+    const statusDefs = [
+      { key: 'ABERTA', valor: d.abertas, label: 'Abertas' },
+      { key: 'EM_TRATAMENTO', valor: d.emTratamento, label: 'Em tratamento' },
+      { key: 'AGUARDANDO_VALIDACAO', valor: d.aguardandoValidacao, label: 'Aguard. validação' },
+      { key: 'FINALIZADA', valor: d.finalizadas, label: 'Finalizadas' }
+    ];
+    const kpiWrap = el('<div class="kpi-grid"></div>');
+    body.appendChild(kpiWrap);
+
     if (comparativoHtml) body.appendChild(el('<div style="margin-top:-4px">' + comparativoHtml + ' <span class="subtle" style="font-size:12.5px">em pendências abertas no período</span></div>'));
 
     if (d.score) {
@@ -3693,11 +3705,50 @@ async function renderDashPendencias() {
     body.appendChild(barCard('Por ocorrência', d.porOcorrencia));
     body.appendChild(evolucaoCard('Evolução das pendências por data', d.registros, function (r) { return String(r.DATA_ABERTURA || '').split(' ')[0]; }));
 
-    const listCard = el('<div class="card stack"><h3 class="title-lg">Pendências recentes</h3></div>');
+    const listCard = el(
+      '<div class="card stack">' +
+        '<div class="row between">' +
+          '<h3 class="title-lg" id="listaPendTitulo">Pendências recentes</h3>' +
+          '<button type="button" class="btn btn--outline btn--sm" id="btnLimparFiltroStatus" hidden>Ver todas</button>' +
+        '</div>' +
+      '</div>'
+    );
     body.appendChild(listCard);
     const listInner = el('<div class="stack"></div>');
     listCard.appendChild(listInner);
-    renderPendenciasList(listInner, d.registros.slice(0, 12), function (p) { go('pendenciaDetalhe', { pendenciaAtual: p }); });
+    const tituloLista = listCard.querySelector('#listaPendTitulo');
+    const btnLimpar = listCard.querySelector('#btnLimparFiltroStatus');
+
+    function renderKpiTabs() {
+      kpiWrap.innerHTML = '';
+      statusDefs.forEach(function (s) {
+        const ativo = filtroStatus === s.key;
+        const btn = el(
+          '<button type="button" class="kpi kpi--clicavel' + (ativo ? ' is-active' : '') + '">' +
+            '<span class="badge-count">' + escapeHtml(s.valor) + '</span>' +
+            '<span class="subtle">' + escapeHtml(s.label) + '</span>' +
+          '</button>'
+        );
+        btn.onclick = function () {
+          filtroStatus = ativo ? null : s.key;
+          renderKpiTabs();
+          renderLista();
+        };
+        kpiWrap.appendChild(btn);
+      });
+    }
+
+    function renderLista() {
+      const def = statusDefs.find(function (s) { return s.key === filtroStatus; });
+      tituloLista.textContent = def ? 'Pendências — ' + def.label : 'Pendências recentes';
+      btnLimpar.hidden = !filtroStatus;
+      const base = filtroStatus ? d.registros.filter(function (r) { return r.STATUS === filtroStatus; }) : d.registros;
+      renderPendenciasList(listInner, base.slice(0, 12), function (p) { go('pendenciaDetalhe', { pendenciaAtual: p }); });
+    }
+    btnLimpar.onclick = function () { filtroStatus = null; renderKpiTabs(); renderLista(); };
+
+    renderKpiTabs();
+    renderLista();
   }
   load();
 }

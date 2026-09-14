@@ -202,12 +202,59 @@ function escapeHtml(str) {
   });
 }
 
+// Fotos de celular costumam vir com vários MB cada (às vezes 8-12MB numa
+// câmera boa) — e cada inspeção pode ter várias (avaria, risco, goteira,
+// captura de caruncho — agora obrigatória, manutenção...). Mandar isso tudo
+// em base64 pro Apps Script é o principal motivo do envio da inspeção
+// parecer lento. Antes de virar data URL, redimensionamos (máx. 1600px no
+// lado maior) e recomprimimos como JPEG — na prática isso costuma cortar
+// 80-95% do tamanho do arquivo sem perda visível de qualidade na tela do
+// celular/no relatório, então o envio e o salvamento no Drive ficam bem
+// mais rápidos. Só fotos são comprimidas; qualquer outro tipo de arquivo
+// (raro nesse campo) vai direto, sem mexer.
+const PHOTO_MAX_DIM = 1600;
+const PHOTO_QUALITY = 0.72;
+
 function fileToDataUrl(file) {
+  if (file.type && file.type.indexOf('image/') === 0 && typeof document !== 'undefined' && document.createElement) {
+    return comprimirImagem(file).catch(function () { return lerArquivoBruto(file); });
+  }
+  return lerArquivoBruto(file);
+}
+
+function lerArquivoBruto(file) {
   return new Promise(function (resolve, reject) {
     const reader = new FileReader();
     reader.onload = function () { resolve(reader.result); };
     reader.onerror = reject;
     reader.readAsDataURL(file);
+  });
+}
+
+function comprimirImagem(file) {
+  return new Promise(function (resolve, reject) {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = function () {
+      URL.revokeObjectURL(url);
+      let width = img.naturalWidth, height = img.naturalHeight;
+      if (!width || !height) { reject(new Error('Imagem inválida')); return; }
+      if (width > PHOTO_MAX_DIM || height > PHOTO_MAX_DIM) {
+        const scale = PHOTO_MAX_DIM / Math.max(width, height);
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { reject(new Error('Canvas indisponível')); return; }
+      ctx.drawImage(img, 0, 0, width, height);
+      try {
+        resolve(canvas.toDataURL('image/jpeg', PHOTO_QUALITY));
+      } catch (e) { reject(e); }
+    };
+    img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('Falha ao carregar imagem')); };
+    img.src = url;
   });
 }
 
@@ -995,8 +1042,9 @@ function stepCarunchos(w) {
           produtoF = textField(detalhe, { label: 'Produto' });
           obsF = textField(detalhe, { label: 'Observação', multiline: true });
         });
+        const foto = photoField(box, { label: 'Foto da captura', required: true });
         entries.push({
-          armadilha: armadilhaNum, quantidade: qtdCaruncho, produtoProximo: produtoProximo,
+          armadilha: armadilhaNum, quantidade: qtdCaruncho, produtoProximo: produtoProximo, foto: foto,
           getExtra: function () { return { baia: baiaF ? baiaF.getValue() : '', produto: produtoF ? produtoF.getValue() : '', observacao: obsF ? obsF.getValue() : '' }; }
         });
       }
@@ -1013,6 +1061,7 @@ function stepCarunchos(w) {
       for (const e of entries) {
         if (!e.armadilha.getValue()) { toast('Informe o número da armadilha em todos os formulários', true); return; }
         if (e.quantidade.getValue() === '') { toast('Informe a quantidade de carunchos em todos os formulários (pode ser 0)', true); return; }
+        if (!e.foto.getValue().length) { toast('A foto é obrigatória em todas as armadilhas com captura', true); return; }
       }
       entries.forEach(function (e) {
         const extra = e.getExtra();
@@ -1020,7 +1069,8 @@ function stepCarunchos(w) {
           armadilha: e.armadilha.getValue(),
           quantidade: e.quantidade.getValue() || 0,
           produtoProximo: !!e.produtoProximo.getValue(),
-          baia: extra.baia, observacao: (extra.produto ? 'Produto: ' + extra.produto + '. ' : '') + extra.observacao
+          baia: extra.baia, observacao: (extra.produto ? 'Produto: ' + extra.produto + '. ' : '') + extra.observacao,
+          fotos: e.foto.getValue()
         });
       });
     }
@@ -1116,7 +1166,8 @@ function stepRevisao(w) {
       card.appendChild(el('<div class="list-item" style="cursor:default"><span><span class="list-item__title">' + escapeHtml(o.tipo) + '</span><div class="list-item__sub">' + escapeHtml(o.descricao) + '</div></span>' + (qtdFotos ? '<span>📷 ' + qtdFotos + '</span>' : '') + '</div>'));
     });
     w.capturas.forEach(function (c) {
-      card.appendChild(el('<div class="list-item" style="cursor:default"><span><span class="list-item__title">Captura — ' + escapeHtml(c.armadilha) + '</span><div class="list-item__sub">Qtd: ' + escapeHtml(c.quantidade) + '</div></span></div>'));
+      const qtdFotosCap = (c.fotos || []).length;
+      card.appendChild(el('<div class="list-item" style="cursor:default"><span><span class="list-item__title">Captura — ' + escapeHtml(c.armadilha) + '</span><div class="list-item__sub">Qtd: ' + escapeHtml(c.quantidade) + '</div></span>' + (qtdFotosCap ? '<span>📷 ' + qtdFotosCap + '</span>' : '') + '</div>'));
     });
     if (w.manutencao) {
       const qtdFotosManut = (w.manutencao.fotos || []).length;
@@ -1776,6 +1827,7 @@ async function renderInspecaoDetalheAdmin() {
           '<button type="button" class="btn btn--outline btn--sm" data-role="btnEditar">✏️ Editar</button></div>' +
           '<p class="subtle" data-role="qtdTexto">Quantidade: ' + escapeHtml(c.QUANTIDADE) + (c.BAIA ? ' · Baia: ' + escapeHtml(c.BAIA) : '') + '</p>' +
           (c.QUANTIDADE_ORIGINAL !== undefined && c.QUANTIDADE_ORIGINAL !== '' ? '<p class="subtle" style="font-size:11.5px;color:var(--st-risco)">Quantidade original: ' + escapeHtml(c.QUANTIDADE_ORIGINAL) + '</p>' : '') +
+          (c.FOTO ? fotosGaleria(c.FOTO) : '') +
           '<div data-role="editWrap" style="display:none"></div>' +
         '</div>'
       );

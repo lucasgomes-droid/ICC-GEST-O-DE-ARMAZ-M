@@ -63,10 +63,12 @@ function flattenParams(obj) {
 
 const S = {
   unidade: null,      // {ID_UNIDADE, UNIDADE}
+  papelLogin: null,   // 'ADMIN' | 'CONFERENTE' — selecionado antes da lista de usuários
   usuario: null,      // {ID_USUARIO, NOME, TIPO, UNIDADE}
   screen: 'loginUnidade',
   cache: {},
   wizard: null,
+  origemPendencia: null, // de onde o admin abriu pendenciaDetalhe (dashPendencias | aprovacaoPendencias) — pra voltar/pós-ação no lugar certo
   pendBadgeCount: 0,
   seenPendIds: null,
   notifInterval: null
@@ -74,6 +76,7 @@ const S = {
 
 function resetSession() {
   S.unidade = null;
+  S.papelLogin = null;
   S.usuario = null;
   S.screen = 'loginUnidade';
   S.wizard = null;
@@ -449,6 +452,7 @@ function render() {
   const screens = {
     loginUnidade: renderLoginUnidade,
     trocarUnidadeGlobal: renderTrocarUnidadeGlobal,
+    loginPapel: renderLoginPapel,
     loginUsuario: renderLoginUsuario,
     loginSenha: renderLoginSenha,
     conferenteHome: renderConferenteHome,
@@ -463,7 +467,6 @@ function render() {
     registrarPendencia: renderRegistrarPendencia,
     dashCarunchos: renderDashCarunchos,
     dashInspecoes: renderDashInspecoes,
-    painelPeriodo: renderPainelPeriodo,
     dashOcorrencias: renderDashOcorrencias,
     manutencoes: renderManutencoes,
     manutencoesConferente: renderManutencoesConferente,
@@ -475,7 +478,10 @@ function render() {
     relatorios: renderRelatorios,
     relatorioDetalhe: renderRelatorioDetalhe,
     dashChecklist: renderDashChecklist,
-    dashPendencias: renderDashPendencias
+    dashPendencias: renderDashPendencias,
+    configChecklist: renderConfigChecklist,
+    dashboard: renderDashboardHub,
+    aprovacaoPendencias: renderAprovacaoPendencias
   };
   (screens[S.screen] || renderLoginUnidade)();
   updateChrome();
@@ -536,10 +542,32 @@ async function renderLoginUnidade() {
     if (!unidades.length) { wrap.innerHTML = '<p class="subtle">Nenhuma unidade ativa cadastrada.</p>'; return; }
     unidades.forEach(function (u) {
       const item = el('<button type="button" class="list-item" style="width:100%"><span class="list-item__title">' + escapeHtml(u.UNIDADE) + '</span><span>›</span></button>');
-      item.onclick = function () { S.unidade = u; go('loginUsuario'); };
+      item.onclick = function () { S.unidade = u; go('loginPapel'); };
       wrap.appendChild(item);
     });
   } catch (e) { /* toast already shown */ }
+}
+
+// Seleção de papel (Admin ou Conferente) logo após escolher a unidade —
+// direciona a lista de usuários seguinte para mostrar só quem é daquele tipo.
+function renderLoginPapel() {
+  appendHtml(app,
+    screenHeader('Login · ' + S.unidade.UNIDADE, 'Como você vai entrar?', 'Selecione seu perfil de acesso') +
+    '<button class="btn btn--outline btn--sm" id="btnVoltarUnidade" style="align-self:flex-start;margin-top:-6px">← Trocar unidade</button>' +
+    '<div class="card stack">' +
+      '<button type="button" class="list-item" id="btnPapelAdmin" style="width:100%">' +
+        '<span><span class="list-item__title">🛡️ Administrador</span>' +
+        '<div class="list-item__sub">Validação, pendências, relatórios e configurações</div></span><span>›</span>' +
+      '</button>' +
+      '<button type="button" class="list-item" id="btnPapelConferente" style="width:100%">' +
+        '<span><span class="list-item__title">🔎 Conferente</span>' +
+        '<div class="list-item__sub">Inspeções, checklists e pendências do dia a dia</div></span><span>›</span>' +
+      '</button>' +
+    '</div>'
+  );
+  document.getElementById('btnVoltarUnidade').onclick = function () { go('loginUnidade'); };
+  document.getElementById('btnPapelAdmin').onclick = function () { S.papelLogin = 'ADMIN'; go('loginUsuario'); };
+  document.getElementById('btnPapelConferente').onclick = function () { S.papelLogin = 'CONFERENTE'; go('loginUsuario'); };
 }
 
 // Para Gerente/Coordenador (UNIDADE = TODAS): troca a unidade de trabalho
@@ -575,17 +603,20 @@ async function renderTrocarUnidadeGlobal() {
 }
 
 async function renderLoginUsuario() {
+  const papel = S.papelLogin || 'CONFERENTE';
+  const papelLabel = papel === 'ADMIN' ? 'Administrador' : 'Conferente';
   appendHtml(app,
-    screenHeader('Login · ' + S.unidade.UNIDADE, 'Quem é você?', 'Selecione seu usuário') +
-    '<button class="btn btn--outline btn--sm" id="btnVoltarUnidade" style="align-self:flex-start;margin-top:-6px">← Trocar unidade</button>' +
+    screenHeader('Login ' + papelLabel + ' · ' + S.unidade.UNIDADE, 'Quem é você?', 'Selecione seu usuário') +
+    '<button class="btn btn--outline btn--sm" id="btnVoltarPapel" style="align-self:flex-start;margin-top:-6px">← Trocar perfil</button>' +
     '<div class="card stack" id="usuariosList"><p class="subtle">Carregando usuários…</p></div>'
   );
-  document.getElementById('btnVoltarUnidade').onclick = function () { go('loginUnidade'); };
+  document.getElementById('btnVoltarPapel').onclick = function () { go('loginPapel'); };
   try {
-    const usuarios = await api('getUsuarios', { unidade: S.unidade.UNIDADE });
+    const usuarios = (await api('getUsuarios', { unidade: S.unidade.UNIDADE }))
+      .filter(function (u) { return u.TIPO === papel; });
     const wrap = document.getElementById('usuariosList');
     wrap.innerHTML = '';
-    if (!usuarios.length) { wrap.innerHTML = '<p class="subtle">Nenhum usuário ativo nesta unidade.</p>'; return; }
+    if (!usuarios.length) { wrap.innerHTML = '<p class="subtle">Nenhum usuário ' + papelLabel.toLowerCase() + ' ativo nesta unidade.</p>'; return; }
     usuarios.forEach(function (u) {
       const item = el(
         '<button type="button" class="list-item" style="width:100%">' +
@@ -1125,9 +1156,12 @@ function stepManutencao(w) {
     refs = { local: local, tipoSel: tipoSel, getOutro: function () { return outroField ? outroField.getValue() : ''; }, descricao: descricao, foto: foto };
   });
 
+  const avisoDuplicada = el('<div class="card" style="display:none;background:var(--st-risco-bg,#fdecea);border-color:var(--st-risco,#d33)" id="avisoManutDuplicada"></div>');
+  card.appendChild(avisoDuplicada);
+
   const btn = el('<button class="btn btn--primary btn--block" style="margin-top:6px">Continuar</button>');
   card.appendChild(btn);
-  btn.onclick = function () {
+  btn.onclick = async function () {
     const val = yn.getValue();
     if (val === null) { toast('Selecione Sim ou Não', true); return; }
     if (val) {
@@ -1135,9 +1169,28 @@ function stepManutencao(w) {
       if (!refs.tipoSel.getValue()) { toast('Selecione o tipo de manutenção', true); return; }
       if (refs.tipoSel.getValue() === 'Outro' && !refs.getOutro()) { toast('Especifique o tipo de manutenção', true); return; }
       if (!refs.foto.getValue().length) { toast('A foto é obrigatória', true); return; }
+
+      // Trava: mesmo armazém + mesmo local + mesmo tipo já com um chamado em
+      // aberto (qualquer status que não seja Finalizada) — não deixa abrir
+      // duplicado, só some quando o chamado existente for resolvido.
+      const localVal = refs.local.getValue();
+      const tipoVal = refs.tipoSel.getValue() === 'Outro' ? refs.getOutro() : refs.tipoSel.getValue();
+      avisoDuplicada.style.display = 'none';
+      btn.disabled = true;
+      try {
+        const check = await api('verificarManutencaoAberta', { unidade: S.unidade.UNIDADE, armazem: w.armazem, local: localVal, tipo: tipoVal });
+        if (check && check.existe) {
+          avisoDuplicada.style.display = 'block';
+          avisoDuplicada.innerHTML = '⚠️ Já existe uma manutenção em aberto para <strong>' + escapeHtml(localVal) + '</strong> (' + escapeHtml(tipoVal) + '), aberta em ' + escapeHtml((check.manutencao && check.manutencao.DATA_ABERTURA) || '') + '. Aguarde ela ser finalizada antes de abrir outra igual.';
+          btn.disabled = false;
+          return;
+        }
+      } catch (e) { btn.disabled = false; return; }
+      btn.disabled = false;
+
       w.manutencao = {
-        local: refs.local.getValue(),
-        tipo: refs.tipoSel.getValue() === 'Outro' ? refs.getOutro() : refs.tipoSel.getValue(),
+        local: localVal,
+        tipo: tipoVal,
         descricao: refs.descricao.getValue(),
         fotos: refs.foto.getValue()
       };
@@ -1188,11 +1241,15 @@ function stepRevisao(w) {
   btnEnviar.onclick = async function () {
     btnEnviar.disabled = true; btnEnviar.textContent = 'Enviando…';
     try {
-      await api('createInspecao', {
+      const resultado = await api('createInspecao', {
         unidade: S.unidade.UNIDADE, idUsuario: S.usuario.ID_USUARIO, usuario: S.usuario.NOME,
         armazem: w.armazem, ocorrencias: w.ocorrencias, capturas: w.capturas, manutencao: w.manutencao || null, observacao: obsField.getValue()
       });
-      toast('Inspeção enviada com sucesso!', false, true);
+      if (resultado && resultado.manutencaoBloqueada) {
+        toast('Inspeção enviada — a manutenção não foi duplicada porque já existe uma em aberto para esse local/tipo.', false, true);
+      } else {
+        toast('Inspeção enviada com sucesso!', false, true);
+      }
       S.wizard = null;
       go('conferenteHome');
     } catch (e) {
@@ -1506,7 +1563,7 @@ function renderPendenciaDetalhe() {
     screenHeader('Pendência ' + p.ID_PENDENCIA, p.TIPO) +
     '<button class="btn btn--outline btn--sm" id="btnVoltar" style="align-self:flex-start;margin-top:-8px">← Voltar</button>'
   );
-  document.getElementById('btnVoltar').onclick = function () { go(S.usuario.TIPO === 'ADMIN' ? 'dashPendencias' : 'minhasPendencias'); };
+  document.getElementById('btnVoltar').onclick = function () { go(S.usuario.TIPO === 'ADMIN' ? (S.origemPendencia || 'dashPendencias') : 'minhasPendencias'); };
 
   const card = el('<div class="card stack"></div>');
   app.appendChild(card);
@@ -1554,12 +1611,12 @@ function renderPendenciaDetalhe() {
       btnAprovar.onclick = async function () {
         await api('validarPendencia', { idPendencia: p.ID_PENDENCIA, aprovado: true, adminValidador: S.usuario.NOME });
         toast('Pendência finalizada!', false, true);
-        go('dashPendencias');
+        go(S.origemPendencia || 'dashPendencias');
       };
       btnReprovar.onclick = async function () {
         await api('validarPendencia', { idPendencia: p.ID_PENDENCIA, aprovado: false, adminValidador: S.usuario.NOME });
         toast('Pendência devolvida para tratamento.', true);
-        go('dashPendencias');
+        go(S.origemPendencia || 'dashPendencias');
       };
     }
   }
@@ -1679,27 +1736,240 @@ async function renderHistorico() {
   refresh();
 }
 
+// ------------------------- ADMIN: ITENS DO CHECKLIST DE LIMPEZA -------------------------
+// Tela de administração para adicionar/editar/remover os itens que aparecem
+// no checklist de limpeza (armazém+periodicidade), sem precisar mexer direto
+// na planilha CONFIG_CHECKLIST_ITENS. Deixar ARMAZEM em branco ("Todos os
+// armazéns") aplica o item a qualquer armazém da unidade — mesma regra que
+// getChecklistItens_ já usa no backend.
+const CHECKLIST_ITEM_TIPOS = [
+  { value: 'PADRAO', label: 'Padrão (OK / Necessita manutenção / Não utilizado)' },
+  { value: 'BALANCA', label: 'Balança (formulário especial)' },
+  { value: 'SUJIDADE', label: 'Sujidade (Sim/Não + foto)' }
+];
+const CHECKLIST_PERIODICIDADES = [['DIARIO', 'Diário'], ['SEMANAL', 'Semanal'], ['MENSAL', 'Mensal'], ['ANUAL', 'Anual']];
+
+async function renderConfigChecklist() {
+  app.appendChild(el(screenHeader('Itens do checklist de limpeza', S.unidade.UNIDADE, 'Adicione, edite ou remova os itens que aparecem no checklist, por armazém e periodicidade')));
+
+  const formCard = el('<div class="card stack" id="formAdd"><h3 class="title-lg" style="margin:0">Adicionar item</h3></div>');
+  app.appendChild(formCard);
+
+  const listWrap = el('<div class="stack" id="listaItens" style="margin-top:14px"><p class="subtle">Carregando…</p></div>');
+  app.appendChild(listWrap);
+
+  let armazens = [];
+  let itens = [];
+  try {
+    const res = await Promise.all([
+      api('getArmazens', { unidade: S.unidade.UNIDADE }),
+      api('getChecklistItensAdmin', { unidade: S.unidade.UNIDADE })
+    ]);
+    armazens = res[0]; itens = res[1];
+  } catch (e) { listWrap.innerHTML = ''; return; }
+
+  const armazemOptions = armazens.map(function (a) { return { value: a.ARMAZEM, label: a.ARMAZEM }; });
+
+  const fPeriodicidade = selectField(formCard, { label: 'Periodicidade', options: CHECKLIST_PERIODICIDADES.map(function (p) { return { value: p[0], label: p[1] }; }) });
+  const fArmazem = selectField(formCard, { label: 'Armazém (deixe em branco para valer em todos)', options: armazemOptions });
+  const fTipo = selectField(formCard, { label: 'Tipo de pergunta', options: CHECKLIST_ITEM_TIPOS });
+  fTipo.select.value = 'PADRAO';
+  const fItem = textField(formCard, { label: 'Texto do item', placeholder: 'Ex: Piso varrido e limpo' });
+  const btnAdd = el('<button class="btn btn--primary btn--block">➕ Adicionar item</button>');
+  formCard.appendChild(btnAdd);
+
+  btnAdd.onclick = async function () {
+    if (!fPeriodicidade.getValue() || !fItem.getValue()) { toast('Preencha periodicidade e o texto do item.', true); return; }
+    btnAdd.disabled = true;
+    try {
+      await api('criarChecklistItem', {
+        unidade: S.unidade.UNIDADE,
+        armazem: fArmazem.getValue(),
+        periodicidade: fPeriodicidade.getValue(),
+        tipo: fTipo.getValue() || 'PADRAO',
+        item: fItem.getValue()
+      });
+      toast('Item adicionado.', false, true);
+      go('configChecklist');
+    } catch (e) { btnAdd.disabled = false; }
+  };
+
+  function renderLista() {
+    listWrap.innerHTML = '';
+    if (!itens.length) { listWrap.appendChild(el('<p class="subtle">Nenhum item configurado ainda.</p>')); return; }
+
+    CHECKLIST_PERIODICIDADES.forEach(function (p) {
+      const doGrupo = itens.filter(function (it) { return it.PERIODICIDADE === p[0]; });
+      if (!doGrupo.length) return;
+      listWrap.appendChild(el('<h3 class="title-lg" style="margin:14px 0 0">' + p[1] + '</h3>'));
+      const card = el('<div class="card stack"></div>');
+      listWrap.appendChild(card);
+      doGrupo.forEach(function (it) { card.appendChild(itemRow(it)); });
+    });
+  }
+
+  function itemRow(it) {
+    const inativo = String(it.ATIVO).toUpperCase() !== 'SIM';
+    // UNIDADE em branco na planilha = item PADRÃO, compartilhado por TODAS
+    // as unidades (é assim que o backend sempre resolveu isso — ver
+    // getChecklistItens_). Editar/desativar/remover um desses aqui afeta as
+    // outras unidades também, então avisamos bem claro antes de deixar.
+    const global = !it.UNIDADE;
+    const row = el(
+      '<div class="list-item" style="cursor:default;flex-wrap:wrap;gap:8px' + (inativo ? ';opacity:.55' : '') + '">' +
+        '<span><span class="list-item__title">' + escapeHtml(it.ITEM) + '</span>' +
+        '<div class="list-item__sub">' + escapeHtml(it.ARMAZEM || 'Todos os armazéns') +
+        (it.TIPO && it.TIPO !== 'PADRAO' ? ' · ' + escapeHtml(it.TIPO) : '') +
+        (inativo ? ' · inativo' : '') + '</div>' +
+        (global ? '<div style="margin-top:4px"><span class="tag tag--risco">🌐 Vale para TODAS as unidades</span></div>' : '') +
+        '</span>' +
+        '<span class="row" style="gap:6px">' +
+          '<button type="button" class="btn btn--outline btn--sm" data-role="editar">✏️ Editar</button>' +
+          '<button type="button" class="btn btn--outline btn--sm" data-role="toggle">' + (inativo ? '✅ Ativar' : '🚫 Desativar') + '</button>' +
+          '<button type="button" class="btn btn--danger btn--sm" data-role="remover">🗑 Remover</button>' +
+        '</span>' +
+      '</div>'
+    );
+
+    function avisoGlobal(acaoLabel) {
+      return '⚠️ Este item é PADRÃO e vale para <strong>todas as unidades</strong> (Macatuba, Jundiaí I e Jundiaí II) — ' + acaoLabel + ' aqui muda para todas elas, não só para ' + escapeHtml(S.unidade.UNIDADE) + '. Confirma mesmo assim?';
+    }
+
+    row.querySelector('[data-role="toggle"]').onclick = function () {
+      const doToggle = async function () {
+        try {
+          await api('atualizarChecklistItem', { idItem: it.ID_ITEM, ativo: inativo ? 'SIM' : 'NAO' });
+          toast(inativo ? 'Item ativado.' : 'Item desativado.', false, true);
+          go('configChecklist');
+        } catch (e) { /* toast já mostrado */ }
+      };
+      if (!global) { doToggle(); return; }
+      const confirmWrap = el(
+        '<div class="row" style="gap:6px;margin-top:6px">' +
+          '<span class="subtle" style="flex:1">' + avisoGlobal(inativo ? 'ativar' : 'desativar') + '</span>' +
+          '<button type="button" class="btn btn--danger btn--sm" data-role="confirmarToggle">Confirmar</button>' +
+          '<button type="button" class="btn btn--outline btn--sm" data-role="cancelarToggle">Cancelar</button>' +
+        '</div>'
+      );
+      row.appendChild(confirmWrap);
+      confirmWrap.querySelector('[data-role="cancelarToggle"]').onclick = function () { confirmWrap.remove(); };
+      confirmWrap.querySelector('[data-role="confirmarToggle"]').onclick = doToggle;
+    };
+
+    row.querySelector('[data-role="remover"]').onclick = function () {
+      const confirmWrap = el(
+        '<div class="row" style="gap:6px;margin-top:6px">' +
+          '<span class="subtle" style="flex:1">' + (global ? avisoGlobal('remover') : 'Remover este item definitivamente?') + '</span>' +
+          '<button type="button" class="btn btn--danger btn--sm" data-role="confirmarRemover">Confirmar</button>' +
+          '<button type="button" class="btn btn--outline btn--sm" data-role="cancelarRemover">Cancelar</button>' +
+        '</div>'
+      );
+      row.appendChild(confirmWrap);
+      confirmWrap.querySelector('[data-role="cancelarRemover"]').onclick = function () { confirmWrap.remove(); };
+      confirmWrap.querySelector('[data-role="confirmarRemover"]').onclick = async function () {
+        try {
+          await api('removerChecklistItem', { idItem: it.ID_ITEM });
+          toast('Item removido.', false, true);
+          go('configChecklist');
+        } catch (e) { /* toast já mostrado */ }
+      };
+    };
+
+    row.querySelector('[data-role="editar"]').onclick = function (ev) {
+      const existente = row.querySelector('.edit-inline');
+      if (existente) { existente.remove(); return; }
+      const editCard = el('<div class="card stack edit-inline" style="margin-top:8px"></div>');
+      row.appendChild(editCard);
+      if (global) editCard.appendChild(el('<p class="subtle" style="color:var(--st-risco,#d33)">' + avisoGlobal('salvar') + '</p>'));
+      const eArmazem = selectField(editCard, { label: 'Armazém (em branco = todos)', options: armazemOptions });
+      if (it.ARMAZEM) eArmazem.select.value = it.ARMAZEM;
+      const ePeriodicidade = selectField(editCard, { label: 'Periodicidade', options: CHECKLIST_PERIODICIDADES.map(function (p) { return { value: p[0], label: p[1] }; }) });
+      ePeriodicidade.select.value = it.PERIODICIDADE;
+      const eTipo = selectField(editCard, { label: 'Tipo de pergunta', options: CHECKLIST_ITEM_TIPOS });
+      eTipo.select.value = it.TIPO || 'PADRAO';
+      const eItem = textField(editCard, { label: 'Texto do item', value: it.ITEM });
+      const btnSalvar = el('<button class="btn btn--primary btn--block">💾 Salvar alterações' + (global ? ' (afeta todas as unidades)' : '') + '</button>');
+      editCard.appendChild(btnSalvar);
+
+      const doSalvar = async function () {
+        btnSalvar.disabled = true;
+        try {
+          await api('atualizarChecklistItem', {
+            idItem: it.ID_ITEM,
+            armazem: eArmazem.getValue(),
+            periodicidade: ePeriodicidade.getValue(),
+            tipo: eTipo.getValue() || 'PADRAO',
+            item: eItem.getValue()
+          });
+          toast('Item atualizado.', false, true);
+          go('configChecklist');
+        } catch (e) { btnSalvar.disabled = false; }
+      };
+
+      btnSalvar.onclick = function () {
+        if (!eItem.getValue() || !ePeriodicidade.getValue()) { toast('Preencha periodicidade e o texto do item.', true); return; }
+        if (!global) { doSalvar(); return; }
+        const jaConfirmando = editCard.querySelector('.confirm-global-edit');
+        if (jaConfirmando) return;
+        const confirmWrap = el(
+          '<div class="row confirm-global-edit" style="gap:6px;margin-top:6px">' +
+            '<span class="subtle" style="flex:1">Confirma salvar para todas as unidades?</span>' +
+            '<button type="button" class="btn btn--danger btn--sm" data-role="confirmarSalvar">Confirmar</button>' +
+            '<button type="button" class="btn btn--outline btn--sm" data-role="cancelarSalvar">Cancelar</button>' +
+          '</div>'
+        );
+        editCard.appendChild(confirmWrap);
+        confirmWrap.querySelector('[data-role="cancelarSalvar"]').onclick = function () { confirmWrap.remove(); };
+        confirmWrap.querySelector('[data-role="confirmarSalvar"]').onclick = doSalvar;
+      };
+    };
+
+    return row;
+  }
+
+  renderLista();
+}
+
 // ------------------------- ADMIN: HOME -------------------------
 
 function renderAdminHome() {
   appendHtml(app,
     screenHeader('Área administrativa', 'Olá, ' + S.usuario.NOME) +
     '<div class="stack">' +
-      menuCard('📅', 'Painel do dia', 'Quais armazéns ainda não fizeram inspeção/limpeza hoje', 'dashInspecoes') +
-      menuCard('📆', 'Painel do período', 'Quantidade de inspeções e checklists não realizados, por armazém, num intervalo de dias', 'painelPeriodo') +
-      menuCard('📊', 'Resumo geral', 'Rondas, checklists, capturas e ocorrências — igual ao relatório semanal', 'resumoGeral') +
+      menuCard('📊', 'Dashboard', 'Painel do dia, resumo geral, pendências, carunchos, ocorrências, manutenções, mapas e limpeza', 'dashboard') +
       menuCard('📄', 'Relatórios', 'Baixar relatórios em CSV (Excel/Sheets)', 'relatorios') +
       menuCard('✅', 'Validação de inspeções', 'Revisar inspeções dos conferentes', 'validacaoInspecoes') +
+      menuCard('🗂️', 'Aprovação de pendências', 'Soluções enviadas pelos conferentes, aguardando validação', 'aprovacaoPendencias') +
       menuCard('➕', 'Registrar pendência', 'Abrir uma pendência manualmente', 'registrarPendencia') +
-      menuCard('📋', 'Dashboard de pendências', 'Status e distribuição', 'dashPendencias') +
-      menuCard('🐞', 'Dashboard de carunchos', 'Capturas por armazém e armadilha', 'dashCarunchos') +
-      menuCard('⚠️', 'Ocorrências da inspeção', 'Avaria, goteira e risco de queda/tombamento por armazém', 'dashOcorrencias') +
-      menuCard('🔧', 'Manutenções', 'Itens pendentes e concluídos, por armazém', 'manutencoes') +
-      menuCard('🗺️', 'Mapa de capturas', 'Visualização espacial das armadilhas', 'mapaCapturas') +
-      menuCard('☔', 'Mapa de goteiras', 'Pontos marcados na inspeção ou adicionados a qualquer momento', 'mapaGoteiras') +
-      menuCard('🧹', 'Dashboard de limpeza', 'Checklists realizados e pendentes', 'dashChecklist') +
+      menuCard('📝', 'Itens do checklist de limpeza', 'Adicionar, editar ou remover perguntas do checklist, por armazém e periodicidade', 'configChecklist') +
     '</div>'
   );
+  bindMenuCards();
+}
+
+// Reúne todos os painéis/dashboards num só lugar, no mesmo padrão já usado
+// pela aba "Relatórios" (uma tela lista os cards, cada um abre sua própria
+// tela). Painel do período foi removido (ver histórico) e Aprovação de
+// pendências ficou de fora de propósito — é fila de ação, não dashboard,
+// então mora direto na Área administrativa junto de Validação de inspeções.
+const DASHBOARDS = [
+  { icone: '📅', titulo: 'Painel do dia', sub: 'Quais armazéns ainda não fizeram inspeção/limpeza hoje', screen: 'dashInspecoes' },
+  { icone: '📊', titulo: 'Resumo geral', sub: 'Rondas, checklists, capturas e ocorrências — igual ao relatório semanal', screen: 'resumoGeral' },
+  { icone: '📋', titulo: 'Dashboard de pendências', sub: 'Status, distribuição e evolução — visão geral, sem ações', screen: 'dashPendencias' },
+  { icone: '🐞', titulo: 'Dashboard de carunchos', sub: 'Capturas por armazém e armadilha', screen: 'dashCarunchos' },
+  { icone: '⚠️', titulo: 'Ocorrências da inspeção', sub: 'Avaria, goteira e risco de queda/tombamento por armazém', screen: 'dashOcorrencias' },
+  { icone: '🔧', titulo: 'Manutenções', sub: 'Itens pendentes e concluídos, por armazém', screen: 'manutencoes' },
+  { icone: '🗺️', titulo: 'Mapa de capturas', sub: 'Visualização espacial das armadilhas', screen: 'mapaCapturas' },
+  { icone: '☔', titulo: 'Mapa de goteiras', sub: 'Pontos marcados na inspeção ou adicionados a qualquer momento', screen: 'mapaGoteiras' },
+  { icone: '🧹', titulo: 'Resumo do checklist de limpeza', sub: 'Igual ao Resumo Geral, dedicado à limpeza — conformidade, itens em manutenção e evolução', screen: 'dashChecklist' }
+];
+
+function renderDashboardHub() {
+  appendHtml(app, screenHeader('Dashboard', S.unidade.UNIDADE, 'Todos os painéis de acompanhamento da unidade') + '<div class="stack"></div>');
+  const wrap = app.querySelector('.stack:last-child');
+  DASHBOARDS.forEach(function (d) {
+    wrap.appendChild(el(menuCard(d.icone, d.titulo, d.sub, d.screen)));
+  });
   bindMenuCards();
 }
 
@@ -2091,99 +2361,6 @@ async function renderDashInspecoes() {
       ));
     });
   }
-}
-
-// Painel do período: mesma ideia do Painel do dia, mas somada ao longo de um
-// intervalo de datas (semana/mês/personalizado) em vez de olhar só "hoje" —
-// mostra quantas inspeções e checklists diários FICARAM FALTANDO em cada
-// armazém no período escolhido.
-async function renderPainelPeriodo() {
-  app.appendChild(el(screenHeader('Painel do período', S.unidade.UNIDADE, 'Quantidade de inspeções e checklists diários não realizados, por armazém')));
-
-  const filterWrap = el(
-    '<div class="filters">' +
-      '<select id="fPeriodo">' +
-        '<option value="semana">Esta semana</option>' +
-        '<option value="mes">Este mês</option>' +
-        '<option value="custom">Período personalizado</option>' +
-      '</select>' +
-    '</div>'
-  );
-  app.appendChild(filterWrap);
-
-  const customWrap = el(
-    '<div class="filters" id="customDates" style="display:none">' +
-      '<input type="date" id="fDataInicial">' +
-      '<input type="date" id="fDataFinal">' +
-      '<button class="btn btn--outline btn--sm" id="btnAplicar">Aplicar</button>' +
-    '</div>'
-  );
-  app.appendChild(customWrap);
-
-  const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
-  app.appendChild(body);
-
-  const selPeriodo = document.getElementById('fPeriodo');
-  const customDates = document.getElementById('customDates');
-  selPeriodo.onchange = function () {
-    customDates.style.display = selPeriodo.value === 'custom' ? 'flex' : 'none';
-    if (selPeriodo.value !== 'custom') load();
-  };
-  document.getElementById('btnAplicar').onclick = load;
-
-  async function load() {
-    body.innerHTML = '<p class="subtle">Carregando…</p>';
-    let range = { dataInicial: '', dataFinal: '' };
-    if (selPeriodo.value === 'custom') {
-      const ini = document.getElementById('fDataInicial').value; // yyyy-mm-dd
-      const fim = document.getElementById('fDataFinal').value;
-      if (ini) range.dataInicial = dateToBR(new Date(ini + 'T00:00:00'));
-      if (fim) range.dataFinal = dateToBR(new Date(fim + 'T00:00:00'));
-    } else {
-      range = periodoRange(selPeriodo.value);
-    }
-    const d = await api('getPainelPeriodo', {
-      unidade: S.unidade.UNIDADE, dataInicial: range.dataInicial, dataFinal: range.dataFinal
-    }).catch(function () { return null; });
-    body.innerHTML = '';
-    if (!d) return;
-
-    body.appendChild(el('<p class="subtle">' + escapeHtml(d.dataInicial) + ' até ' + escapeHtml(d.dataFinal) + ' (' + d.diasNoPeriodo + (d.diasNoPeriodo === 1 ? ' dia' : ' dias') + ') · ' + d.totalArmazens + ' armazém(ns) ativo(s)</p>'));
-
-    body.appendChild(el(
-      '<div class="kpi-grid">' +
-        kpi(d.totalInspecoesNaoRealizadas + '/' + d.totalEsperadoInspecoes, 'Inspeções não realizadas') +
-        kpi(d.totalChecklistsNaoRealizados + '/' + d.totalEsperadoChecklists, 'Checklists não realizados') +
-      '</div>'
-    ));
-
-    const listCard = el('<div class="card stack"><h3 class="title-lg">Por armazém</h3><p class="subtle" style="margin-top:-6px">Ordenado do que mais tem pendência para o que menos tem</p></div>');
-    body.appendChild(listCard);
-
-    if (!d.porArmazem.length) {
-      listCard.appendChild(el('<p class="subtle">Nenhum armazém ativo cadastrado.</p>'));
-      return;
-    }
-
-    d.porArmazem.forEach(function (a) {
-      const semPendencia = a.inspecoesNaoRealizadas === 0 && a.checklistsNaoRealizados === 0;
-      const item = el(
-        '<div class="list-item" style="cursor:default;flex-wrap:wrap;gap:8px">' +
-          '<span><span class="list-item__title">' + escapeHtml(a.armazem) + '</span></span>' +
-          '<span class="row" style="gap:6px">' +
-          (semPendencia
-            ? '<span class="tag tag--finalizada">Em dia ✓</span>'
-            : (
-              '<span class="tag ' + (a.inspecoesNaoRealizadas ? 'tag--risco' : 'tag--finalizada') + '">' + a.inspecoesNaoRealizadas + ' inspeção(ões) faltando</span>' +
-              '<span class="tag ' + (a.checklistsNaoRealizados ? 'tag--risco' : 'tag--finalizada') + '">' + a.checklistsNaoRealizados + ' checklist(s) faltando</span>'
-            )) +
-          '</span>' +
-        '</div>'
-      );
-      listCard.appendChild(item);
-    });
-  }
-  load();
 }
 
 // ------------------------- RELATÓRIOS (download em CSV) -------------------------
@@ -3504,7 +3681,7 @@ function calcularAlertasArmadilha(porArmadilha) {
 }
 
 async function renderDashChecklist() {
-  app.appendChild(el(screenHeader('Dashboard de limpeza', S.unidade.UNIDADE)));
+  app.appendChild(el(screenHeader('Resumo do checklist de limpeza', S.unidade.UNIDADE, 'Mesmo padrão do Resumo Geral — agora dedicado ao checklist de limpeza')));
 
   const filterWrap = el(
     '<div class="filters">' +
@@ -3574,10 +3751,16 @@ async function renderDashChecklist() {
     }
 
     body.appendChild(el(
-      '<div class="kpi-grid">' + kpi(d.total, 'Itens registrados') + kpi(d.naoConformidades, 'Não conformidades') + '</div>'
+      '<div class="kpi-grid">' +
+        kpi(d.totalRondasLimpeza, 'Rondas de limpeza') +
+        kpi(d.total, 'Itens registrados') +
+        kpi(d.percentualOk + '%', 'Conformidade (OK)') +
+        kpi(d.naoConformidades, 'Não conformidades') +
+      '</div>'
     ));
     if (comparativoHtml) body.appendChild(el('<div style="margin-top:-4px">' + comparativoHtml + ' <span class="subtle" style="font-size:12.5px">em não conformidades</span></div>'));
 
+    body.appendChild(barCard('Por resultado', d.porResultado));
     body.appendChild(barCard('Por conferente', d.porConferente));
     body.appendChild(barCard('Por armazém', d.porArmazem));
     body.appendChild(barCard('Por periodicidade', d.porPeriodicidade));
@@ -3585,6 +3768,19 @@ async function renderDashChecklist() {
 
     const cardAspirador = aspiradorCard(d.registros);
     if (cardAspirador) body.appendChild(cardAspirador);
+
+    if (d.itensManutencao && d.itensManutencao.length) {
+      const manutCard = el('<div class="card stack"><h3 class="title-lg">🔧 Itens que precisam de manutenção</h3><p class="subtle" style="margin-top:-6px">Marcados como "Necessita manutenção" no checklist, no período filtrado</p></div>');
+      body.appendChild(manutCard);
+      d.itensManutencao.slice(0, 15).forEach(function (r) {
+        manutCard.appendChild(el(
+          '<div class="list-item" style="cursor:default;flex-wrap:wrap;gap:6px">' +
+            '<span><span class="list-item__title">' + escapeHtml(r.ARMAZEM) + ' — ' + escapeHtml(r.ITEM) + '</span>' +
+            '<div class="list-item__sub">' + escapeHtml(r.PERIODICIDADE) + ' · ' + escapeHtml(r.DATA) + ' · ' + escapeHtml(r.USUARIO) + (r.OBSERVACAO ? '<br>' + escapeHtml(r.OBSERVACAO) : '') + '</div></span>' +
+          '</div>'
+        ));
+      });
+    }
 
     if (d.registros.length) {
       const listCard = el('<div class="card stack"><h3 class="title-lg">Checklists recentes</h3></div>');
@@ -3743,7 +3939,7 @@ async function renderDashPendencias() {
       tituloLista.textContent = def ? 'Pendências — ' + def.label : 'Pendências recentes';
       btnLimpar.hidden = !filtroStatus;
       const base = filtroStatus ? d.registros.filter(function (r) { return r.STATUS === filtroStatus; }) : d.registros;
-      renderPendenciasList(listInner, base.slice(0, 12), function (p) { go('pendenciaDetalhe', { pendenciaAtual: p }); });
+      renderPendenciasList(listInner, base.slice(0, 12), function (p) { go('pendenciaDetalhe', { pendenciaAtual: p, origemPendencia: 'dashPendencias' }); });
     }
     btnLimpar.onclick = function () { filtroStatus = null; renderKpiTabs(); renderLista(); };
 
@@ -3751,6 +3947,27 @@ async function renderDashPendencias() {
     renderLista();
   }
   load();
+}
+
+// ------------------------- ADMIN: APROVAÇÃO DE PENDÊNCIAS -------------------------
+// Tela própria só com o que precisa de AÇÃO do admin agora (soluções enviadas
+// pelo conferente aguardando aprovar/reprovar) — separada do "Dashboard de
+// pendências" (que é visão geral/estatística), pra ficar claro o que é fila
+// de trabalho e o que é painel de acompanhamento.
+async function renderAprovacaoPendencias() {
+  app.appendChild(el(screenHeader('Aprovação de pendências', S.unidade.UNIDADE, 'Soluções enviadas pelos conferentes, aguardando sua validação')));
+  const listWrap = el('<div class="stack" id="list" style="margin-top:8px"><p class="subtle">Carregando…</p></div>');
+  app.appendChild(listWrap);
+
+  try {
+    const pend = await api('getPendencias', { unidade: S.unidade.UNIDADE, status: 'AGUARDANDO_VALIDACAO' });
+    listWrap.innerHTML = '';
+    if (!pend.length) {
+      listWrap.appendChild(el('<div class="empty"><span class="ic">✅</span>Nenhuma pendência aguardando aprovação no momento.</div>'));
+      return;
+    }
+    renderPendenciasList(listWrap, pend, function (p) { go('pendenciaDetalhe', { pendenciaAtual: p, origemPendencia: 'aprovacaoPendencias' }); });
+  } catch (e) { /* toast já mostrado */ }
 }
 
 function kpi(value, label) {

@@ -1366,6 +1366,19 @@ function renderChecklist() {
         card.appendChild(box);
         box.appendChild(el('<strong>' + escapeHtml(it.item) + '</strong>'));
 
+        // Item com respostas definidas pelo admin (ex: "Sim / Não / N/A") —
+        // ver tela "Itens do checklist de limpeza". O RESULTADO salvo é o
+        // texto exato da resposta escolhida, sem foto/observação obrigatória.
+        if (it.tipo === 'PERSONALIZADO') {
+          const opcoes = checklistOpcoesArray(it.opcoes);
+          const escolha = choiceField(box, { label: 'Resposta', columns: opcoes.length > 2 ? 3 : (opcoes.length || 1), options: opcoes.map(function (o) { return { value: o, label: o }; }) });
+          return {
+            item: it.item, especial: true,
+            validate: function () { return !!escolha.getValue(); },
+            build: function () { return { item: it.item, resultado: escolha.getValue(), observacao: '', fotos: [] }; }
+          };
+        }
+
         if (it.tipo === 'BALANCA') {
           const balanca = renderBalancaForm(box);
           return {
@@ -1744,9 +1757,14 @@ async function renderHistorico() {
 // getChecklistItens_ já usa no backend.
 const CHECKLIST_ITEM_TIPOS = [
   { value: 'PADRAO', label: 'Padrão (OK / Necessita manutenção / Não utilizado)' },
+  { value: 'PERSONALIZADO', label: 'Personalizado (você escreve as respostas)' },
   { value: 'BALANCA', label: 'Balança (formulário especial)' },
   { value: 'SUJIDADE', label: 'Sujidade (Sim/Não + foto)' }
 ];
+// Pro tipo Personalizado: quebra "Sim, Não, N/A" em ['Sim','Não','N/A'].
+function checklistOpcoesArray(str) {
+  return String(str || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+}
 const CHECKLIST_PERIODICIDADES = [['DIARIO', 'Diário'], ['SEMANAL', 'Semanal'], ['MENSAL', 'Mensal'], ['ANUAL', 'Anual']];
 
 async function renderConfigChecklist() {
@@ -1772,14 +1790,29 @@ async function renderConfigChecklist() {
 
   const fPeriodicidade = selectField(formCard, { label: 'Periodicidade', options: CHECKLIST_PERIODICIDADES.map(function (p) { return { value: p[0], label: p[1] }; }) });
   const fArmazem = selectField(formCard, { label: 'Armazém (deixe em branco para valer em todos)', options: armazemOptions });
-  const fTipo = selectField(formCard, { label: 'Tipo de pergunta', options: CHECKLIST_ITEM_TIPOS });
+  const fItem = textField(formCard, { label: 'Pergunta', placeholder: 'Ex: Foi realizada a limpeza dos utensílios de limpeza após o uso na ronda?' });
+  const fTipo = selectField(formCard, { label: 'Tipo de resposta', options: CHECKLIST_ITEM_TIPOS });
   fTipo.select.value = 'PADRAO';
-  const fItem = textField(formCard, { label: 'Texto do item', placeholder: 'Ex: Piso varrido e limpo' });
+  const fOpcoesWrap = el('<div style="display:none"></div>');
+  formCard.appendChild(fOpcoesWrap);
+  let fOpcoes = null;
+  fTipo.select.onchange = function () {
+    fOpcoesWrap.style.display = fTipo.getValue() === 'PERSONALIZADO' ? 'block' : 'none';
+    fOpcoesWrap.innerHTML = '';
+    fOpcoes = null;
+    if (fTipo.getValue() === 'PERSONALIZADO') {
+      fOpcoes = textField(fOpcoesWrap, { label: 'Respostas (separe por vírgula)', placeholder: 'Ex: Sim, Não, N/A' });
+    }
+  };
   const btnAdd = el('<button class="btn btn--primary btn--block">➕ Adicionar item</button>');
   formCard.appendChild(btnAdd);
 
   btnAdd.onclick = async function () {
-    if (!fPeriodicidade.getValue() || !fItem.getValue()) { toast('Preencha periodicidade e o texto do item.', true); return; }
+    if (!fPeriodicidade.getValue() || !fItem.getValue()) { toast('Preencha periodicidade e a pergunta.', true); return; }
+    if (fTipo.getValue() === 'PERSONALIZADO' && checklistOpcoesArray(fOpcoes && fOpcoes.getValue()).length < 2) {
+      toast('Escreva pelo menos 2 respostas, separadas por vírgula (ex: Sim, Não, N/A).', true);
+      return;
+    }
     btnAdd.disabled = true;
     try {
       await api('criarChecklistItem', {
@@ -1787,6 +1820,7 @@ async function renderConfigChecklist() {
         armazem: fArmazem.getValue(),
         periodicidade: fPeriodicidade.getValue(),
         tipo: fTipo.getValue() || 'PADRAO',
+        opcoes: fTipo.getValue() === 'PERSONALIZADO' ? fOpcoes.getValue() : '',
         item: fItem.getValue()
       });
       toast('Item adicionado.', false, true);
@@ -1819,7 +1853,8 @@ async function renderConfigChecklist() {
       '<div class="list-item" style="cursor:default;flex-wrap:wrap;gap:8px' + (inativo ? ';opacity:.55' : '') + '">' +
         '<span><span class="list-item__title">' + escapeHtml(it.ITEM) + '</span>' +
         '<div class="list-item__sub">' + escapeHtml(it.ARMAZEM || 'Todos os armazéns') +
-        (it.TIPO && it.TIPO !== 'PADRAO' ? ' · ' + escapeHtml(it.TIPO) : '') +
+        (it.TIPO === 'PERSONALIZADO' ? ' · Respostas: ' + escapeHtml(checklistOpcoesArray(it.OPCOES).join(' / ')) :
+          (it.TIPO && it.TIPO !== 'PADRAO' ? ' · ' + escapeHtml(it.TIPO) : '')) +
         (inativo ? ' · inativo' : '') + '</div>' +
         (global ? '<div style="margin-top:4px"><span class="tag tag--risco">🌐 Vale para TODAS as unidades</span></div>' : '') +
         '</span>' +
@@ -1885,9 +1920,20 @@ async function renderConfigChecklist() {
       if (it.ARMAZEM) eArmazem.select.value = it.ARMAZEM;
       const ePeriodicidade = selectField(editCard, { label: 'Periodicidade', options: CHECKLIST_PERIODICIDADES.map(function (p) { return { value: p[0], label: p[1] }; }) });
       ePeriodicidade.select.value = it.PERIODICIDADE;
-      const eTipo = selectField(editCard, { label: 'Tipo de pergunta', options: CHECKLIST_ITEM_TIPOS });
+      const eItem = textField(editCard, { label: 'Pergunta', value: it.ITEM });
+      const eTipo = selectField(editCard, { label: 'Tipo de resposta', options: CHECKLIST_ITEM_TIPOS });
       eTipo.select.value = it.TIPO || 'PADRAO';
-      const eItem = textField(editCard, { label: 'Texto do item', value: it.ITEM });
+      const eOpcoesWrap = el('<div style="display:' + (eTipo.select.value === 'PERSONALIZADO' ? 'block' : 'none') + '"></div>');
+      editCard.appendChild(eOpcoesWrap);
+      let eOpcoes = eTipo.select.value === 'PERSONALIZADO' ? textField(eOpcoesWrap, { label: 'Respostas (separe por vírgula)', value: it.OPCOES, placeholder: 'Ex: Sim, Não, N/A' }) : null;
+      eTipo.select.onchange = function () {
+        eOpcoesWrap.style.display = eTipo.getValue() === 'PERSONALIZADO' ? 'block' : 'none';
+        eOpcoesWrap.innerHTML = '';
+        eOpcoes = null;
+        if (eTipo.getValue() === 'PERSONALIZADO') {
+          eOpcoes = textField(eOpcoesWrap, { label: 'Respostas (separe por vírgula)', value: it.OPCOES, placeholder: 'Ex: Sim, Não, N/A' });
+        }
+      };
       const btnSalvar = el('<button class="btn btn--primary btn--block">💾 Salvar alterações' + (global ? ' (afeta todas as unidades)' : '') + '</button>');
       editCard.appendChild(btnSalvar);
 
@@ -1899,6 +1945,7 @@ async function renderConfigChecklist() {
             armazem: eArmazem.getValue(),
             periodicidade: ePeriodicidade.getValue(),
             tipo: eTipo.getValue() || 'PADRAO',
+            opcoes: eTipo.getValue() === 'PERSONALIZADO' ? (eOpcoes ? eOpcoes.getValue() : '') : '',
             item: eItem.getValue()
           });
           toast('Item atualizado.', false, true);
@@ -1907,7 +1954,11 @@ async function renderConfigChecklist() {
       };
 
       btnSalvar.onclick = function () {
-        if (!eItem.getValue() || !ePeriodicidade.getValue()) { toast('Preencha periodicidade e o texto do item.', true); return; }
+        if (!eItem.getValue() || !ePeriodicidade.getValue()) { toast('Preencha periodicidade e a pergunta.', true); return; }
+        if (eTipo.getValue() === 'PERSONALIZADO' && checklistOpcoesArray(eOpcoes && eOpcoes.getValue()).length < 2) {
+          toast('Escreva pelo menos 2 respostas, separadas por vírgula (ex: Sim, Não, N/A).', true);
+          return;
+        }
         if (!global) { doSalvar(); return; }
         const jaConfirmando = editCard.querySelector('.confirm-global-edit');
         if (jaConfirmando) return;

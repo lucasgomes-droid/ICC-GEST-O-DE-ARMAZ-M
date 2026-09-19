@@ -1767,6 +1767,41 @@ function checklistOpcoesArray(str) {
 }
 const CHECKLIST_PERIODICIDADES = [['DIARIO', 'Diário'], ['SEMANAL', 'Semanal'], ['MENSAL', 'Mensal'], ['ANUAL', 'Anual']];
 
+// Seleção de vários armazéns por checkbox (ex: item vale só pro 01, 03, 05 e
+// 07, sem precisar cadastrar 4 vezes). Nenhum marcado = vale para TODOS —
+// mesma regra que já existia com o campo em branco. O valor salvo continua
+// sendo texto simples na coluna ARMAZEM, só que agora pode ter vários nomes
+// separados por vírgula (ver checklistOpcoesArray, usado pra ler de volta).
+function armazemMultiField(container, opts) {
+  const options = opts.options || [];
+  const wrap = el(
+    '<div class="field">' +
+      '<label>' + escapeHtml(opts.label) + '</label>' +
+      '<div class="stack" style="gap:2px;max-height:220px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:8px"></div>' +
+    '</div>'
+  );
+  container.appendChild(wrap);
+  const listWrap = wrap.querySelector('.stack');
+  const marcados = {};
+  (opts.initial || []).forEach(function (v) { marcados[v] = true; });
+  options.forEach(function (o) {
+    const id = 'ckarm_' + Math.random().toString(36).slice(2);
+    const row = el(
+      '<label for="' + id + '" style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:4px 2px">' +
+        '<input type="checkbox" id="' + id + '" value="' + escapeHtml(o.value) + '"' + (marcados[o.value] ? ' checked' : '') + '>' +
+        '<span>' + escapeHtml(o.label) + '</span>' +
+      '</label>'
+    );
+    listWrap.appendChild(row);
+  });
+  return {
+    node: wrap,
+    getValue: function () {
+      return Array.prototype.slice.call(listWrap.querySelectorAll('input[type="checkbox"]:checked')).map(function (cb) { return cb.value; });
+    }
+  };
+}
+
 async function renderConfigChecklist() {
   app.appendChild(el(screenHeader('Itens do checklist de limpeza', S.unidade.UNIDADE, 'Adicione, edite ou remova os itens que aparecem no checklist, por armazém e periodicidade')));
 
@@ -1789,7 +1824,7 @@ async function renderConfigChecklist() {
   const armazemOptions = armazens.map(function (a) { return { value: a.ARMAZEM, label: a.ARMAZEM }; });
 
   const fPeriodicidade = selectField(formCard, { label: 'Periodicidade', options: CHECKLIST_PERIODICIDADES.map(function (p) { return { value: p[0], label: p[1] }; }) });
-  const fArmazem = selectField(formCard, { label: 'Armazém (deixe em branco para valer em todos)', options: armazemOptions });
+  const fArmazem = armazemMultiField(formCard, { label: 'Armazéns (nenhum marcado = vale para todos)', options: armazemOptions });
   const fItem = textField(formCard, { label: 'Pergunta', placeholder: 'Ex: Foi realizada a limpeza dos utensílios de limpeza após o uso na ronda?' });
   const fTipo = selectField(formCard, { label: 'Tipo de resposta', options: CHECKLIST_ITEM_TIPOS });
   fTipo.select.value = 'PADRAO';
@@ -1817,7 +1852,7 @@ async function renderConfigChecklist() {
     try {
       await api('criarChecklistItem', {
         unidade: S.unidade.UNIDADE,
-        armazem: fArmazem.getValue(),
+        armazem: fArmazem.getValue().join(', '),
         periodicidade: fPeriodicidade.getValue(),
         tipo: fTipo.getValue() || 'PADRAO',
         opcoes: fTipo.getValue() === 'PERSONALIZADO' ? fOpcoes.getValue() : '',
@@ -1916,8 +1951,7 @@ async function renderConfigChecklist() {
       const editCard = el('<div class="card stack edit-inline" style="margin-top:8px"></div>');
       row.appendChild(editCard);
       if (global) editCard.appendChild(el('<p class="subtle" style="color:var(--st-risco,#d33)">' + avisoGlobal('salvar') + '</p>'));
-      const eArmazem = selectField(editCard, { label: 'Armazém (em branco = todos)', options: armazemOptions });
-      if (it.ARMAZEM) eArmazem.select.value = it.ARMAZEM;
+      const eArmazem = armazemMultiField(editCard, { label: 'Armazéns (nenhum marcado = vale para todos)', options: armazemOptions, initial: checklistOpcoesArray(it.ARMAZEM) });
       const ePeriodicidade = selectField(editCard, { label: 'Periodicidade', options: CHECKLIST_PERIODICIDADES.map(function (p) { return { value: p[0], label: p[1] }; }) });
       ePeriodicidade.select.value = it.PERIODICIDADE;
       const eItem = textField(editCard, { label: 'Pergunta', value: it.ITEM });
@@ -1942,7 +1976,7 @@ async function renderConfigChecklist() {
         try {
           await api('atualizarChecklistItem', {
             idItem: it.ID_ITEM,
-            armazem: eArmazem.getValue(),
+            armazem: eArmazem.getValue().join(', '),
             periodicidade: ePeriodicidade.getValue(),
             tipo: eTipo.getValue() || 'PADRAO',
             opcoes: eTipo.getValue() === 'PERSONALIZADO' ? (eOpcoes ? eOpcoes.getValue() : '') : '',

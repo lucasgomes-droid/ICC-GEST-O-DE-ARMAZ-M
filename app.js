@@ -3881,6 +3881,43 @@ async function renderDashChecklist() {
         recentes
       ));
     }
+
+    const descricaoPeriodo = descricaoPeriodoDetalhada(selPeriodo.value, range);
+
+    const btnPDF = el('<button class="btn btn--accent btn--block">📄 Baixar PDF (com gráficos, texto e comparativo)</button>');
+    body.appendChild(btnPDF);
+    btnPDF.onclick = async function () {
+      btnPDF.disabled = true; btnPDF.textContent = 'Calculando período…';
+      try {
+        const resumo = await api('getResumoChecklist', {
+          unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
+          dataInicial: range.dataInicial, dataFinal: range.dataFinal
+        });
+
+        let resumoAnterior = null;
+        let periodoAnterior = '';
+        if (selPeriodo.value !== 'tudo') {
+          const rangeAnterior = periodoAnteriorRange(range);
+          if (rangeAnterior) {
+            btnPDF.textContent = 'Calculando período anterior…';
+            resumoAnterior = await api('getResumoChecklist', {
+              unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
+              dataInicial: rangeAnterior.dataInicial, dataFinal: rangeAnterior.dataFinal
+            }).catch(function () { return null; });
+            periodoAnterior = rangeAnterior.dataInicial + ' até ' + rangeAnterior.dataFinal;
+          }
+        }
+
+        btnPDF.textContent = 'Gerando PDF…';
+        const resultado = await api('gerarResumoChecklistPDF', {
+          unidade: S.unidade.UNIDADE, periodo: descricaoPeriodo, resumo: resumo,
+          resumoAnterior: resumoAnterior, periodoAnterior: periodoAnterior
+        });
+        downloadBase64File(resultado.filename, resultado.base64, 'application/pdf');
+        toast('PDF gerado!', false, true);
+      } catch (e) { /* toast já mostrado */ }
+      btnPDF.disabled = false; btnPDF.textContent = '📄 Baixar PDF (com gráficos, texto e comparativo)';
+    };
   }
   load();
 }

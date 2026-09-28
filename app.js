@@ -2040,7 +2040,7 @@ function renderAdminHome() {
 // então mora direto na Área administrativa junto de Validação de inspeções.
 const DASHBOARDS = [
   { icone: '📅', titulo: 'Painel do dia', sub: 'Quais armazéns ainda não fizeram inspeção/limpeza hoje', screen: 'dashInspecoes' },
-  { icone: '🔎', titulo: 'Rondas de inspeções', sub: 'Rondas e apontamentos por armazém e por conferente, com status das manutenções', screen: 'dashRondas' },
+  { icone: '🔎', titulo: 'Rondas de inspeções', sub: 'Rondas e manutenções abertas por armazém e por conferente, com status detalhado', screen: 'dashRondas' },
   { icone: '📊', titulo: 'Resumo geral', sub: 'Rondas, checklists, capturas e ocorrências — igual ao relatório semanal', screen: 'resumoGeral' },
   { icone: '📋', titulo: 'Dashboard de pendências', sub: 'Status, distribuição e evolução — visão geral, sem ações', screen: 'dashPendencias' },
   { icone: '🐞', titulo: 'Dashboard de carunchos', sub: 'Capturas por armazém e armadilha', screen: 'dashCarunchos' },
@@ -2764,6 +2764,21 @@ async function renderResumoGeral() {
 
     body.appendChild(barCard('Rondas por conferente', d.porConferente));
     body.appendChild(barCard('Dias sem captura por armazém', d.diasSemCapturaPorArmazem));
+
+    // Evolução mensal: tendência dos últimos 6 meses corridos, sempre igual
+    // independente do filtro de período acima (esse filtro é só pro resto da
+    // tela) — pra dar visão de longo prazo, não só o corte do período atual.
+    const evolucao = await api('getEvolucaoMensal', { unidade: S.unidade.UNIDADE, armazem: selArmazem.value }).catch(function () { return null; });
+    if (evolucao) {
+      body.appendChild(el('<h3 class="title-lg" style="margin-top:4px">Evolução mensal (últimos 6 meses)</h3>'));
+      const meses = evolucao.meses;
+      function porMesEntries(valores) { return meses.map(function (m, i) { return [m, valores[i]]; }); }
+      body.appendChild(chartCard('Capturas de carunchos por mês', null, porMesEntries(evolucao.capturasPorMes)));
+      body.appendChild(chartCard('Goteiras por mês', null, porMesEntries(evolucao.goteirasPorMes), { colorFor: function () { return '#8B5CF6'; } }));
+      body.appendChild(chartCard('Avarias por mês', null, porMesEntries(evolucao.avariasPorMes), { colorFor: function () { return 'var(--st-risco)'; } }));
+      body.appendChild(chartCard('Manutenções abertas por mês', null, porMesEntries(evolucao.manutencoesAbertasPorMes), { colorFor: function () { return 'var(--st-aberta)'; } }));
+      body.appendChild(chartCard('Manutenções finalizadas por mês', null, porMesEntries(evolucao.manutencoesFinalizadasPorMes), { colorFor: function () { return 'var(--st-finalizada)'; } }));
+    }
 
     const descricaoPeriodo = descricaoPeriodoDetalhada(selPeriodo.value, range);
 
@@ -3930,7 +3945,7 @@ async function renderDashChecklist() {
 // desses apontamentos — mesmo padrão visual dos outros dashboards, disponível
 // para todas as unidades (cada uma só vê os próprios dados, como sempre).
 async function renderDashRondas() {
-  app.appendChild(el(screenHeader('Rondas de inspeções', S.unidade.UNIDADE, 'Rondas e apontamentos por armazém e por conferente')));
+  app.appendChild(el(screenHeader('Rondas de inspeções', S.unidade.UNIDADE, 'Rondas e manutenções abertas, por armazém e por conferente')));
 
   const filterWrap = el(
     '<div class="filters">' +
@@ -3990,7 +4005,7 @@ async function renderDashRondas() {
     body.appendChild(el(
       '<div class="kpi-grid">' +
         kpi(d.totalRondas, 'Total de rondas') +
-        kpi(d.totalApontamentos, 'Total de apontamentos') +
+        kpi(d.totalApontamentos, 'Apontamentos (manutenções abertas)') +
       '</div>'
     ));
 
@@ -4003,32 +4018,69 @@ async function renderDashRondas() {
       colorFor: function () { return 'var(--accent)'; }
     }));
 
-    // Status das não conformidades: puxado direto das manutenções abertas a
-    // partir desses apontamentos (finalizada = resolvido, resto = em aberto).
+    // Status das não conformidades: os 4 status reais de manutenção (igual
+    // ao Dashboard de Manutenções) — Não iniciado, Em andamento, Aguardando
+    // aprovação e Finalizada aparecem separados, nenhum é escondido dentro
+    // de um "em aberto" genérico.
     if (d.manutencoesTotal > 0) {
-      const finalizadas = d.manutencoesFinalizadas;
-      const emAberto = d.manutencoesEmAberto;
-      const pctFinalizadas = Math.round((finalizadas / d.manutencoesTotal) * 100);
-      const pctEmAberto = 100 - pctFinalizadas;
+      const st = d.manutencoesPorStatus;
+      const STATUS_INFO = [
+        { key: 'NAO_INICIADO', label: 'Não iniciado', color: 'var(--st-aberta)' },
+        { key: 'EM_ANDAMENTO', label: 'Em andamento', color: 'var(--st-tratamento)' },
+        { key: 'AGUARDANDO_APROVACAO', label: 'Aguardando aprovação', color: 'var(--st-validacao)' },
+        { key: 'FINALIZADA', label: 'Finalizada', color: 'var(--st-finalizada)' }
+      ];
+      let acumulado = 0;
+      const fatias = STATUS_INFO.map(function (s) {
+        const qtd = st[s.key] || 0;
+        const pct = d.manutencoesTotal ? (qtd / d.manutencoesTotal) * 100 : 0;
+        const de = acumulado, ate = acumulado + pct;
+        acumulado = ate;
+        return { qtd: qtd, pct: pct, de: de, ate: ate, color: s.color, label: s.label };
+      });
+      const gradiente = fatias.filter(function (f) { return f.qtd > 0; }).map(function (f) { return f.color + ' ' + f.de.toFixed(1) + '% ' + f.ate.toFixed(1) + '%'; }).join(', ');
+      const legendaHtml = fatias.map(function (f) {
+        const pctTxt = d.manutencoesTotal ? (Math.round(f.pct * 10) / 10).toString().replace('.', ',') : '0';
+        return '<div class="row" style="gap:8px"><span style="width:10px;height:10px;border-radius:3px;background:' + f.color + ';flex-shrink:0"></span><span style="font-size:13px"><strong>' + f.label + '</strong> — ' + f.qtd + ' (' + pctTxt + '%)</span></div>';
+      }).join('');
+
       body.appendChild(el(
         '<div class="card stack">' +
           '<h3 class="title-lg">Status das não conformidades</h3>' +
           '<p class="subtle" style="margin-top:-6px">' + d.manutencoesTotal + ' manutenção(ões) aberta(s) a partir dos apontamentos no período</p>' +
-          '<div class="row" style="gap:20px;align-items:center;margin-top:4px">' +
+          '<div class="row" style="gap:20px;align-items:center;margin-top:4px;flex-wrap:wrap">' +
             '<div style="position:relative;width:110px;height:110px;flex-shrink:0">' +
-              '<div style="width:110px;height:110px;border-radius:50%;background:conic-gradient(var(--st-finalizada) 0% ' + pctFinalizadas + '%, var(--st-risco) ' + pctFinalizadas + '% 100%)"></div>' +
+              '<div style="width:110px;height:110px;border-radius:50%;background:conic-gradient(' + gradiente + ')"></div>' +
               '<div style="position:absolute;inset:18px;background:#fff;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center">' +
                 '<span style="font-family:var(--mono);font-weight:700;font-size:18px;color:var(--ink)">' + d.manutencoesTotal + '</span>' +
                 '<span class="subtle" style="font-size:10px">no período</span>' +
               '</div>' +
             '</div>' +
-            '<div class="stack" style="gap:8px">' +
-              '<div class="row" style="gap:8px"><span style="width:10px;height:10px;border-radius:3px;background:var(--st-finalizada);flex-shrink:0"></span><span style="font-size:13.5px"><strong>Resolvido</strong> — ' + finalizadas + ' (' + pctFinalizadas + '%)</span></div>' +
-              '<div class="row" style="gap:8px"><span style="width:10px;height:10px;border-radius:3px;background:var(--st-risco);flex-shrink:0"></span><span style="font-size:13.5px"><strong>Em aberto</strong> — ' + emAberto + ' (' + pctEmAberto + '%)</span></div>' +
-            '</div>' +
+            '<div class="stack" style="gap:8px">' + legendaHtml + '</div>' +
           '</div>' +
         '</div>'
       ));
+    }
+
+    // Por armazém — quebra o mesmo status de manutenção por armazém (só os
+    // armazéns que tiveram manutenção no período), sem misturar conferente.
+    if (d.manutencoesPorArmazem && d.manutencoesPorArmazem.length) {
+      const armazemCard = el('<div class="card stack"><h3 class="title-lg">Status das manutenções por armazém</h3></div>');
+      body.appendChild(armazemCard);
+      d.manutencoesPorArmazem.forEach(function (a) {
+        const tags = [];
+        if (a.naoIniciado) tags.push('<span class="tag tag--aberta">Não iniciado ' + a.naoIniciado + '</span>');
+        if (a.emAndamento) tags.push('<span class="tag tag--tratamento">Em andamento ' + a.emAndamento + '</span>');
+        if (a.aguardandoAprovacao) tags.push('<span class="tag tag--validacao">Aguard. aprovação ' + a.aguardandoAprovacao + '</span>');
+        if (a.finalizada) tags.push('<span class="tag tag--finalizada">Finalizada ' + a.finalizada + '</span>');
+        armazemCard.appendChild(el(
+          '<div class="list-item" style="cursor:default;flex-wrap:wrap;gap:8px">' +
+            '<span><span class="list-item__title">' + escapeHtml(a.armazem) + '</span>' +
+            '<div class="list-item__sub" style="margin-top:2px">' + a.total + ' manutenção(ões) no período</div></span>' +
+            '<span style="display:flex;flex-wrap:wrap;gap:5px;justify-content:flex-end">' + tags.join('') + '</span>' +
+          '</div>'
+        ));
+      });
     }
 
     body.appendChild(el(

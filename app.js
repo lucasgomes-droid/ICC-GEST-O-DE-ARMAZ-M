@@ -478,6 +478,7 @@ function render() {
     relatorios: renderRelatorios,
     relatorioDetalhe: renderRelatorioDetalhe,
     dashChecklist: renderDashChecklist,
+    dashRondas: renderDashRondas,
     dashPendencias: renderDashPendencias,
     configChecklist: renderConfigChecklist,
     dashboard: renderDashboardHub,
@@ -2039,6 +2040,7 @@ function renderAdminHome() {
 // então mora direto na Área administrativa junto de Validação de inspeções.
 const DASHBOARDS = [
   { icone: '📅', titulo: 'Painel do dia', sub: 'Quais armazéns ainda não fizeram inspeção/limpeza hoje', screen: 'dashInspecoes' },
+  { icone: '🔎', titulo: 'Rondas de inspeções', sub: 'Rondas e apontamentos por armazém e por conferente, com status das manutenções', screen: 'dashRondas' },
   { icone: '📊', titulo: 'Resumo geral', sub: 'Rondas, checklists, capturas e ocorrências — igual ao relatório semanal', screen: 'resumoGeral' },
   { icone: '📋', titulo: 'Dashboard de pendências', sub: 'Status, distribuição e evolução — visão geral, sem ações', screen: 'dashPendencias' },
   { icone: '🐞', titulo: 'Dashboard de carunchos', sub: 'Capturas por armazém e armadilha', screen: 'dashCarunchos' },
@@ -3918,6 +3920,120 @@ async function renderDashChecklist() {
       } catch (e) { /* toast já mostrado */ }
       btnPDF.disabled = false; btnPDF.textContent = '📄 Baixar PDF (com gráficos, texto e comparativo)';
     };
+  }
+  load();
+}
+
+// ------------------------- DASHBOARD: RONDAS DE INSPEÇÕES -------------------------
+// Junta rondas (inspeções) + apontamentos (avarias/goteiras/risco) por
+// armazém e por conferente, mais o status das manutenções abertas a partir
+// desses apontamentos — mesmo padrão visual dos outros dashboards, disponível
+// para todas as unidades (cada uma só vê os próprios dados, como sempre).
+async function renderDashRondas() {
+  app.appendChild(el(screenHeader('Rondas de inspeções', S.unidade.UNIDADE, 'Rondas e apontamentos por armazém e por conferente')));
+
+  const filterWrap = el(
+    '<div class="filters">' +
+      '<select id="fPeriodo">' +
+        '<option value="tudo">Todo o período</option>' +
+        '<option value="semana">Esta semana</option>' +
+        '<option value="mes">Este mês</option>' +
+        '<option value="custom">Período personalizado</option>' +
+      '</select>' +
+      '<select id="fArmazem"><option value="">Todos os armazéns</option></select>' +
+    '</div>'
+  );
+  app.appendChild(filterWrap);
+  const customWrap = el(
+    '<div class="filters" id="customDates" style="display:none">' +
+      '<input type="date" id="fDataInicial">' +
+      '<input type="date" id="fDataFinal">' +
+      '<button class="btn btn--outline btn--sm" id="btnAplicar">Aplicar</button>' +
+    '</div>'
+  );
+  app.appendChild(customWrap);
+
+  const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
+  app.appendChild(body);
+
+  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const selArmazem = document.getElementById('fArmazem');
+  armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
+
+  const selPeriodo = document.getElementById('fPeriodo');
+  const customDates = document.getElementById('customDates');
+  selPeriodo.onchange = function () {
+    customDates.style.display = selPeriodo.value === 'custom' ? 'flex' : 'none';
+    if (selPeriodo.value !== 'custom') load();
+  };
+  document.getElementById('btnAplicar').onclick = load;
+  selArmazem.onchange = load;
+
+  async function load() {
+    body.innerHTML = '<p class="subtle">Carregando…</p>';
+    let range = { dataInicial: '', dataFinal: '' };
+    if (selPeriodo.value === 'custom') {
+      const ini = document.getElementById('fDataInicial').value;
+      const fim = document.getElementById('fDataFinal').value;
+      if (ini) range.dataInicial = dateToBR(new Date(ini + 'T00:00:00'));
+      if (fim) range.dataFinal = dateToBR(new Date(fim + 'T00:00:00'));
+    } else {
+      range = periodoRange(selPeriodo.value);
+    }
+    const d = await api('getResumoInspecoes', {
+      unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
+      dataInicial: range.dataInicial, dataFinal: range.dataFinal
+    }).catch(function () { return null; });
+    body.innerHTML = '';
+    if (!d) return;
+
+    body.appendChild(el(
+      '<div class="kpi-grid">' +
+        kpi(d.totalRondas, 'Total de rondas') +
+        kpi(d.totalApontamentos, 'Total de apontamentos') +
+      '</div>'
+    ));
+
+    body.appendChild(barCard('Rondas por armazém', d.rondasPorArmazem));
+    body.appendChild(barCard('Apontamentos por armazém', d.apontamentosPorArmazem, {
+      colorFor: function () { return 'var(--accent)'; }
+    }));
+    body.appendChild(barCard('Rondas por conferente', d.rondasPorConferente));
+    body.appendChild(barCard('Apontamentos por conferente', d.apontamentosPorConferente, {
+      colorFor: function () { return 'var(--accent)'; }
+    }));
+
+    // Status das não conformidades: puxado direto das manutenções abertas a
+    // partir desses apontamentos (finalizada = resolvido, resto = em aberto).
+    if (d.manutencoesTotal > 0) {
+      const finalizadas = d.manutencoesFinalizadas;
+      const emAberto = d.manutencoesEmAberto;
+      const pctFinalizadas = Math.round((finalizadas / d.manutencoesTotal) * 100);
+      const pctEmAberto = 100 - pctFinalizadas;
+      body.appendChild(el(
+        '<div class="card stack">' +
+          '<h3 class="title-lg">Status das não conformidades</h3>' +
+          '<p class="subtle" style="margin-top:-6px">' + d.manutencoesTotal + ' manutenção(ões) aberta(s) a partir dos apontamentos no período</p>' +
+          '<div class="row" style="gap:20px;align-items:center;margin-top:4px">' +
+            '<div style="position:relative;width:110px;height:110px;flex-shrink:0">' +
+              '<div style="width:110px;height:110px;border-radius:50%;background:conic-gradient(var(--st-finalizada) 0% ' + pctFinalizadas + '%, var(--st-risco) ' + pctFinalizadas + '% 100%)"></div>' +
+              '<div style="position:absolute;inset:18px;background:#fff;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center">' +
+                '<span style="font-family:var(--mono);font-weight:700;font-size:18px;color:var(--ink)">' + d.manutencoesTotal + '</span>' +
+                '<span class="subtle" style="font-size:10px">no período</span>' +
+              '</div>' +
+            '</div>' +
+            '<div class="stack" style="gap:8px">' +
+              '<div class="row" style="gap:8px"><span style="width:10px;height:10px;border-radius:3px;background:var(--st-finalizada);flex-shrink:0"></span><span style="font-size:13.5px"><strong>Resolvido</strong> — ' + finalizadas + ' (' + pctFinalizadas + '%)</span></div>' +
+              '<div class="row" style="gap:8px"><span style="width:10px;height:10px;border-radius:3px;background:var(--st-risco);flex-shrink:0"></span><span style="font-size:13.5px"><strong>Em aberto</strong> — ' + emAberto + ' (' + pctEmAberto + '%)</span></div>' +
+            '</div>' +
+          '</div>' +
+        '</div>'
+      ));
+    }
+
+    body.appendChild(el(
+      '<p class="subtle" style="text-align:center">Quer o detalhe de cada manutenção? Veja "Manutenções" no menu.</p>'
+    ));
   }
   load();
 }

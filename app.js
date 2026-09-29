@@ -2805,7 +2805,7 @@ async function renderResumoGeral() {
 
         btnPDF.textContent = 'Gerando PDF…';
         const resultado = await api('gerarResumoPDF', {
-          unidade: S.unidade.UNIDADE, periodo: descricaoPeriodo, resumo: d, mapasImagens: mapasImagens,
+          unidade: S.unidade.UNIDADE, armazem: selArmazem.value, periodo: descricaoPeriodo, resumo: d, mapasImagens: mapasImagens,
           resumoAnterior: anterior, periodoAnterior: descricaoAnterior
         });
         downloadBase64File(resultado.filename, resultado.base64, 'application/pdf');

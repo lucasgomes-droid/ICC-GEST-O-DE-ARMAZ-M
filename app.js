@@ -498,7 +498,7 @@ function updateChrome() {
   }
   topbar.hidden = false;
   document.getElementById('topbarUnidade').textContent = S.unidade.UNIDADE;
-  document.getElementById('topbarUsuario').textContent = S.usuario.NOME + ' · ' + (S.usuario.TIPO === 'ADMIN' ? 'Admin' : 'Conferente');
+  document.getElementById('topbarUsuario').textContent = S.usuario.NOME + ' · ' + (S.usuario.TIPO === 'ADMIN' ? 'Admin' : (S.usuario.TIPO === 'AJUDANTE' ? 'Ajudante' : 'Conferente'));
   document.getElementById('btnTrocarUnidadeGlobal').hidden = String(S.usuario.UNIDADE).toUpperCase() !== 'TODAS';
 
   tabbar.hidden = false;
@@ -508,6 +508,11 @@ function updateChrome() {
         { s: 'validacaoInspecoes', ic: '✅', label: 'Inspeções' },
         { s: 'dashPendencias', ic: '📋', label: 'Pendências' },
         { s: 'dashCarunchos', ic: '🐞', label: 'Carunchos' }
+      ]
+    : S.usuario.TIPO === 'AJUDANTE'
+    ? [
+        { s: 'conferenteHome', ic: '🏠', label: 'Início' },
+        { s: 'checklist', ic: '🧹', label: 'Checklist' }
       ]
     : [
         { s: 'conferenteHome', ic: '🏠', label: 'Início' },
@@ -613,16 +618,20 @@ async function renderLoginUsuario() {
   );
   document.getElementById('btnVoltarPapel').onclick = function () { go('loginPapel'); };
   try {
+    // Ajudante entra pela mesma tela de Conferente (é um conferente
+    // restrito), então aparece junto na lista quando o papel escolhido é
+    // CONFERENTE — só com o rótulo diferente pra ficar claro quem é quem.
     const usuarios = (await api('getUsuarios', { unidade: S.unidade.UNIDADE }))
-      .filter(function (u) { return u.TIPO === papel; });
+      .filter(function (u) { return u.TIPO === papel || (papel === 'CONFERENTE' && u.TIPO === 'AJUDANTE'); });
     const wrap = document.getElementById('usuariosList');
     wrap.innerHTML = '';
     if (!usuarios.length) { wrap.innerHTML = '<p class="subtle">Nenhum usuário ' + papelLabel.toLowerCase() + ' ativo nesta unidade.</p>'; return; }
     usuarios.forEach(function (u) {
+      const rotulo = u.TIPO === 'ADMIN' ? 'Administrador' : (u.TIPO === 'AJUDANTE' ? 'Ajudante · só checklist de limpeza' : 'Conferente');
       const item = el(
         '<button type="button" class="list-item" style="width:100%">' +
           '<span><span class="list-item__title">' + escapeHtml(u.NOME) + '</span>' +
-          '<div class="list-item__sub">' + (u.TIPO === 'ADMIN' ? 'Administrador' : 'Conferente') + '</div></span><span>›</span>' +
+          '<div class="list-item__sub">' + rotulo + '</div></span><span>›</span>' +
         '</button>'
       );
       item.onclick = function () {
@@ -662,16 +671,24 @@ function renderLoginSenha() {
 
 // ------------------------- CONFERENTE: HOME -------------------------
 
+// Ajudante é um "conferente restrito": faz login pela mesma tela de
+// Conferente, mas só pode realizar o checklist de limpeza — sem inspeção,
+// pendências, manutenções, mapa de goteiras nem histórico. É controlado
+// pelo TIPO='AJUDANTE' na aba CONFIG_USUARIOS (o resto do cadastro é igual
+// ao de um conferente normal).
 function renderConferenteHome() {
+  const ehAjudante = S.usuario.TIPO === 'AJUDANTE';
   appendHtml(app,
-    screenHeader('Área do conferente', 'Olá, ' + S.usuario.NOME) +
+    screenHeader('Área do conferente', 'Olá, ' + S.usuario.NOME + (ehAjudante ? ' (Ajudante)' : '')) +
     '<div class="stack">' +
-      menuCard('🔎', 'Inspeção dos galpões', 'Registrar uma nova inspeção', 'inspecao') +
       menuCard('🧹', 'Checklist de limpeza', 'Diário, semanal, mensal ou anual', 'checklist') +
-      menuCard('📋', 'Minhas pendências', 'Ver e resolver pendências direcionadas a você', 'minhasPendencias') +
-      menuCard('🔧', 'Manutenções', 'Acompanhar o andamento das manutenções da unidade', 'manutencoesConferente') +
-      menuCard('☔', 'Mapa de goteiras', 'Ver, adicionar e resolver goteiras marcadas no mapa', 'mapaGoteiras') +
-      menuCard('🕘', 'Histórico', 'Suas inspeções e checklists anteriores', 'historico') +
+      (ehAjudante ? '' :
+        menuCard('🔎', 'Inspeção dos galpões', 'Registrar uma nova inspeção', 'inspecao') +
+        menuCard('📋', 'Minhas pendências', 'Ver e resolver pendências direcionadas a você', 'minhasPendencias') +
+        menuCard('🔧', 'Manutenções', 'Acompanhar o andamento das manutenções da unidade', 'manutencoesConferente') +
+        menuCard('☔', 'Mapa de goteiras', 'Ver, adicionar e resolver goteiras marcadas no mapa', 'mapaGoteiras') +
+        menuCard('🕘', 'Histórico', 'Suas inspeções e checklists anteriores', 'historico')
+      ) +
     '</div>'
   );
   bindMenuCards();

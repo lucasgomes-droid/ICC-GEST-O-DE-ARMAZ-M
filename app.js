@@ -293,11 +293,20 @@ function photoField(container, opts) {
   const wrap = el('<div class="photo-input"></div>');
   container.appendChild(wrap);
 
-  function abrirSeletor() {
+  // modo 'camera' força abertura direta da câmera (capture=environment);
+  // modo 'galeria' (ou omitido) abre o seletor de arquivos/fotos do aparelho.
+  // Separar os dois evita o problema, em alguns navegadores/webviews (ex:
+  // link aberto de dentro de outro app), de o seletor único não oferecer a
+  // opção de câmera e só mostrar a galeria.
+  function abrirSeletor(modo) {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
-    input.multiple = true;
+    if (modo === 'camera') {
+      input.capture = 'environment';
+    } else {
+      input.multiple = true;
+    }
     input.style.display = 'none';
     input.onchange = async function (e) {
       const files = Array.prototype.slice.call(e.target.files || []);
@@ -329,18 +338,25 @@ function photoField(container, opts) {
         grid.appendChild(thumb);
       });
       if (fotos.length < max) {
-        const addTile = el('<button type="button" class="photo-add-tile" title="Adicionar mais uma foto">＋</button>');
-        addTile.onclick = abrirSeletor;
+        const addTile = el('<button type="button" class="photo-add-tile" title="Tirar mais uma foto">📷</button>');
+        addTile.onclick = function () { abrirSeletor('camera'); };
         grid.appendChild(addTile);
+        const addTileGaleria = el('<button type="button" class="photo-add-tile" title="Escolher mais fotos da galeria">🖼️</button>');
+        addTileGaleria.onclick = function () { abrirSeletor('galeria'); };
+        grid.appendChild(addTileGaleria);
       }
       wrap.appendChild(grid);
     } else {
-      const btn = el(
-        '<div class="photo-btn' + (opts.required ? ' required' : '') + '">📷 Toque para tirar foto ou escolher da galeria' +
-        (opts.required ? ' (obrigatória)' : ' (pode escolher mais de uma)') + '</div>'
+      const btnRow = el(
+        '<div class="photo-btn-row" style="display:flex;gap:8px">' +
+          '<button type="button" class="photo-btn' + (opts.required ? ' required' : '') + '" style="flex:1">📷 Tirar foto' + (opts.required ? ' *' : '') + '</button>' +
+          '<button type="button" class="photo-btn' + (opts.required ? ' required' : '') + '" style="flex:1">🖼️ Galeria</button>' +
+        '</div>'
       );
-      btn.onclick = abrirSeletor;
-      wrap.appendChild(btn);
+      const btns = btnRow.querySelectorAll('.photo-btn');
+      btns[0].onclick = function () { abrirSeletor('camera'); };
+      btns[1].onclick = function () { abrirSeletor('galeria'); };
+      wrap.appendChild(btnRow);
     }
   }
 

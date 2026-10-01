@@ -300,7 +300,8 @@ function linkOriginalDrive(url) {
   return m ? 'https://drive.google.com/file/d/' + m[1] + '/view' : url;
 }
 
-function abrirVisualizadorFoto(urls, indice) {
+function abrirVisualizadorFoto(urls, indice, legendas) {
+  legendas = legendas || [];
   let i = indice || 0;
   const multiplas = urls.length > 1;
   const ov = el(
@@ -311,6 +312,7 @@ function abrirVisualizadorFoto(urls, indice) {
         '<button type="button" class="lightbox__btn lightbox__close" aria-label="Fechar">✕</button>' +
       '</div>' +
       '<img class="lightbox__img" alt="Foto ampliada">' +
+      '<div class="lightbox__caption" hidden></div>' +
       (multiplas
         ? '<button type="button" class="lightbox__nav lightbox__nav--prev" aria-label="Foto anterior">‹</button>' +
           '<button type="button" class="lightbox__nav lightbox__nav--next" aria-label="Próxima foto">›</button>'
@@ -320,12 +322,15 @@ function abrirVisualizadorFoto(urls, indice) {
   const img = ov.querySelector('.lightbox__img');
   const count = ov.querySelector('.lightbox__count');
   const link = ov.querySelector('a.lightbox__btn');
+  const caption = ov.querySelector('.lightbox__caption');
 
   function mostrar() {
     img.src = fotoEmAltaResolucao(urls[i]);
     img.onerror = function () { img.onerror = null; img.src = urls[i]; }; // se a versão maior falhar, usa a original
     link.href = linkOriginalDrive(urls[i]);
     count.textContent = multiplas ? (i + 1) + ' de ' + urls.length : '';
+    caption.textContent = legendas[i] || '';
+    caption.hidden = !legendas[i];
   }
   function ir(delta) { i = (i + delta + urls.length) % urls.length; mostrar(); }
   function fechar() {
@@ -365,7 +370,11 @@ document.addEventListener('click', function (e) {
   const alvo = e.target.closest('.photo-gallery img');
   if (!alvo) return;
   const imgs = Array.from(alvo.closest('.photo-gallery').querySelectorAll('img'));
-  abrirVisualizadorFoto(imgs.map(function (im) { return im.getAttribute('src'); }), imgs.indexOf(alvo));
+  abrirVisualizadorFoto(
+    imgs.map(function (im) { return im.getAttribute('src'); }),
+    imgs.indexOf(alvo),
+    imgs.map(function (im) { return im.getAttribute('data-legenda') || ''; })
+  );
 });
 
 // Componente reutilizável de captura de foto — aceita UMA OU VÁRIAS fotos.
@@ -572,6 +581,7 @@ function render() {
     manutencoes: renderManutencoes,
     manutencoesConferente: renderManutencoesConferente,
     mapaCapturas: renderMapaCapturas,
+    fotosCapturas: renderFotosCapturas,
     mapaGoteiras: renderMapaGoteiras,
     novaGoteira: renderNovaGoteira,
     resumoGeral: renderResumoGeral,
@@ -2165,6 +2175,7 @@ const DASHBOARDS = [
   { icone: '⚠️', titulo: 'Ocorrências da inspeção', sub: 'Avaria, goteira e risco de queda/tombamento por armazém', screen: 'dashOcorrencias' },
   { icone: '🔧', titulo: 'Manutenções', sub: 'Itens pendentes e concluídos, por armazém', screen: 'manutencoes' },
   { icone: '🗺️', titulo: 'Mapa de capturas', sub: 'Visualização espacial das armadilhas', screen: 'mapaCapturas' },
+  { icone: '📷', titulo: 'Fotos de capturas', sub: 'Fotos das armadilhas por data, com quantidade e armazém', screen: 'fotosCapturas' },
   { icone: '☔', titulo: 'Mapa de goteiras', sub: 'Pontos marcados na inspeção ou adicionados a qualquer momento', screen: 'mapaGoteiras' },
   { icone: '🧹', titulo: 'Resumo do checklist de limpeza', sub: 'Igual ao Resumo Geral, dedicado à limpeza — conformidade, itens em manutenção e evolução', screen: 'dashChecklist' }
 ];
@@ -3524,6 +3535,134 @@ async function renderMapaCapturas() {
         listaArmadilhas.appendChild(item);
       });
     }
+  }
+  load();
+}
+
+// ------------------------- FOTOS DE CAPTURAS -------------------------
+// Galeria das fotos tiradas nas capturas de carunchos (obrigatórias desde a
+// Decisão 9), agrupadas por data, da mais recente para a mais antiga. Cada
+// foto tem uma legenda com quantidade, data e armazém (e armadilha), que
+// também aparece no visualizador em tela cheia. Mesmos filtros de período e
+// armazém dos outros dashboards. Pedido do supervisor do Lucas (01/10/2026).
+async function renderFotosCapturas() {
+  app.appendChild(el(screenHeader('Fotos de capturas', S.unidade.UNIDADE, 'Fotos das armadilhas com captura de carunchos, agrupadas por data')));
+
+  const filterWrap = el(
+    '<div class="filters">' +
+      '<select id="fPeriodo">' +
+        '<option value="semana">Esta semana</option>' +
+        '<option value="mes">Este mês</option>' +
+        '<option value="tudo">Todo o período</option>' +
+        '<option value="custom">Período personalizado</option>' +
+      '</select>' +
+      '<select id="fArmazem"><option value="">Todos os armazéns</option></select>' +
+    '</div>'
+  );
+  app.appendChild(filterWrap);
+  const customWrap = el(
+    '<div class="filters" id="customDates" style="display:none">' +
+      '<input type="date" id="fDataInicial">' +
+      '<input type="date" id="fDataFinal">' +
+      '<button class="btn btn--outline btn--sm" id="btnAplicar">Aplicar</button>' +
+    '</div>'
+  );
+  app.appendChild(customWrap);
+
+  const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
+  app.appendChild(body);
+
+  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const selArmazem = document.getElementById('fArmazem');
+  armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
+
+  const selPeriodo = document.getElementById('fPeriodo');
+  const customDates = document.getElementById('customDates');
+  selPeriodo.onchange = function () {
+    customDates.style.display = selPeriodo.value === 'custom' ? 'flex' : 'none';
+    if (selPeriodo.value !== 'custom') load();
+  };
+  document.getElementById('btnAplicar').onclick = load;
+  selArmazem.onchange = load;
+
+  function legendaCaptura(c) {
+    const qtd = Number(c.quantidade) || 0;
+    return qtd + (qtd === 1 ? ' caruncho' : ' carunchos') + ' · ' + c.data + ' · ' + c.armazem + ' · Armadilha ' + c.armadilha;
+  }
+
+  async function load() {
+    body.innerHTML = '<p class="subtle">Carregando…</p>';
+    let range = { dataInicial: '', dataFinal: '' };
+    if (selPeriodo.value === 'custom') {
+      const ini = document.getElementById('fDataInicial').value;
+      const fim = document.getElementById('fDataFinal').value;
+      if (ini) range.dataInicial = dateToBR(new Date(ini + 'T00:00:00'));
+      if (fim) range.dataFinal = dateToBR(new Date(fim + 'T00:00:00'));
+    } else {
+      range = periodoRange(selPeriodo.value);
+    }
+    const capturas = await api('getFotosCapturas', {
+      unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
+      dataInicial: range.dataInicial, dataFinal: range.dataFinal
+    }).catch(function () { return null; });
+    body.innerHTML = '';
+    if (!capturas) return;
+
+    if (!capturas.length) {
+      body.appendChild(el('<div class="empty"><span class="ic">📷</span>Nenhuma foto de captura nesse período.<br><span style="font-size:12px">Só aparecem capturas registradas depois que a foto passou a ser obrigatória.</span></div>'));
+      return;
+    }
+
+    const totalFotos = capturas.reduce(function (s, c) { return s + fotosArray(c.foto).length; }, 0);
+    const totalCarunchos = capturas.reduce(function (s, c) { return s + (Number(c.quantidade) || 0); }, 0);
+    const porData = {};
+    const ordemDatas = [];
+    capturas.forEach(function (c) {
+      if (!porData[c.data]) { porData[c.data] = []; ordemDatas.push(c.data); }
+      porData[c.data].push(c);
+    });
+
+    body.appendChild(el(
+      '<div class="kpi-grid">' +
+        kpi(totalFotos, 'Fotos') +
+        kpi(capturas.length, 'Capturas com foto') +
+        kpi(totalCarunchos, 'Carunchos') +
+        kpi(ordemDatas.length, 'Dias com captura') +
+      '</div>'
+    ));
+
+    renderPaginado(body, ordemDatas, function (data) {
+      const doDia = porData[data];
+      const somaDia = doDia.reduce(function (s, c) { return s + (Number(c.quantidade) || 0); }, 0);
+      const card = el(
+        '<div class="card stack">' +
+          '<div class="row between">' +
+            '<h3 class="title-lg">' + escapeHtml(data) + '</h3>' +
+            '<span class="tag tag--risco">' + somaDia + (somaDia === 1 ? ' caruncho' : ' carunchos') + '</span>' +
+          '</div>' +
+        '</div>'
+      );
+      // uma galeria só por dia: no visualizador, as setas passam por todas
+      // as fotos daquele dia, cada uma com a sua legenda
+      const galeria = el('<div class="photo-gallery foto-captura-grid"></div>');
+      doDia.forEach(function (c) {
+        const legenda = legendaCaptura(c);
+        fotosArray(c.foto).forEach(function (url) {
+          galeria.appendChild(el(
+            '<figure class="foto-captura">' +
+              '<img class="photo-preview" src="' + escapeHtml(url) + '" data-legenda="' + escapeHtml(legenda) + '" alt="' + escapeHtml(legenda) + '" loading="lazy">' +
+              '<figcaption>' +
+                '<strong>' + escapeHtml(c.quantidade) + (Number(c.quantidade) === 1 ? ' caruncho' : ' carunchos') + '</strong>' +
+                '<span>' + escapeHtml(c.data) + ' · ' + escapeHtml(c.armazem) + '</span>' +
+                '<span>Armadilha ' + escapeHtml(c.armadilha) + (c.usuario ? ' · ' + escapeHtml(c.usuario) : '') + '</span>' +
+              '</figcaption>' +
+            '</figure>'
+          ));
+        });
+      });
+      card.appendChild(galeria);
+      return card;
+    }, 7);
   }
   load();
 }

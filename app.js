@@ -2847,6 +2847,36 @@ async function renderResumoGeral() {
       btnPDF.disabled = false; btnPDF.textContent = '📄 Baixar PDF (com gráficos, mapa e comparativo)';
     };
 
+    // PDF consolidado (todas as unidades): só para Gerente/Coordenador
+    // (UNIDADE = TODAS). Usa o mesmo período escolhido acima; o filtro de
+    // armazém não se aplica (cada unidade tem os seus).
+    if (String(S.usuario.UNIDADE).toUpperCase() === 'TODAS') {
+      const btnConsolidado = el('<button class="btn btn--primary btn--block">📑 PDF consolidado — todas as unidades (comparativo + análise de cada uma)</button>');
+      body.appendChild(btnConsolidado);
+      body.appendChild(el('<p class="subtle" style="text-align:center;margin-top:-6px">Usa o período escolhido acima. Pode levar alguns minutos.</p>'));
+      btnConsolidado.onclick = async function () {
+        const textoOriginal = btnConsolidado.textContent;
+        btnConsolidado.disabled = true;
+        try {
+          const unidades = await api('getUnidades', {});
+          const mapasPorUnidade = {};
+          for (const u of unidades) {
+            btnConsolidado.textContent = 'Montando mapas — ' + u.UNIDADE + '…';
+            mapasPorUnidade[u.UNIDADE] = await capturarImagensDosMapas(range, u.UNIDADE).catch(function () { return []; });
+          }
+          btnConsolidado.textContent = 'Gerando PDF consolidado (pode levar alguns minutos)…';
+          const resultado = await api('gerarResumoConsolidadoPDF', {
+            dataInicial: range.dataInicial, dataFinal: range.dataFinal,
+            periodo: descricaoPeriodo, mapasPorUnidade: mapasPorUnidade,
+            semAnterior: selPeriodo.value === 'tudo'
+          });
+          downloadBase64File(resultado.filename, resultado.base64, 'application/pdf');
+          toast('PDF consolidado gerado!', false, true);
+        } catch (e) { /* toast já mostrado */ }
+        btnConsolidado.disabled = false; btnConsolidado.textContent = textoOriginal;
+      };
+    }
+
     body.appendChild(el(
       '<p class="subtle" style="text-align:center">Quer o detalhe de cada tipo? Veja "Ocorrências da inspeção", "Dashboard de carunchos" ou "Dashboard de limpeza" no menu.</p>'
     ));
@@ -2858,20 +2888,21 @@ async function renderResumoGeral() {
 // Mapa de Capturas — ou os pontos de goteira, igual à tela de Mapa de
 // Goteiras) num <canvas> escondido e exporta como PNG base64, para embutir
 // no PDF do jeito que aparece no app.
-async function capturarImagensDosMapas(range) {
+async function capturarImagensDosMapas(range, unidade) {
   range = range || {};
-  const mapas = await api('getMapasDisponiveis', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  unidade = unidade || S.unidade.UNIDADE;
+  const mapas = await api('getMapasDisponiveis', { unidade: unidade }).catch(function () { return []; });
   const resultado = [];
   for (const mapa of mapas) {
     try {
-      const pontos = await api('getMapaCapturas', { unidade: S.unidade.UNIDADE, mapa: mapa, dataInicial: range.dataInicial || '', dataFinal: range.dataFinal || '' });
+      const pontos = await api('getMapaCapturas', { unidade: unidade, mapa: mapa, dataInicial: range.dataInicial || '', dataFinal: range.dataFinal || '' });
       const base64 = await desenharMapaEmCanvas('assets/mapas/' + mapa, pontos, 'carunchos');
       if (base64) resultado.push({ label: MAPA_LABEL[mapa] || mapa, base64: base64, tipo: 'CARUNCHO' });
     } catch (e) { /* pula esse mapa se der erro */ }
   }
   for (const mapa of mapas) {
     try {
-      const pontosGoteira = await api('getMapaGoteiras', { unidade: S.unidade.UNIDADE, mapa: mapa });
+      const pontosGoteira = await api('getMapaGoteiras', { unidade: unidade, mapa: mapa });
       if (!pontosGoteira.length) continue; // não vale a pena gerar slide/página de um mapa sem nenhuma goteira ativa
       const base64 = await desenharMapaEmCanvas('assets/mapas/' + mapa, pontosGoteira, 'goteiras');
       if (base64) resultado.push({ label: MAPA_LABEL[mapa] || mapa, base64: base64, tipo: 'GOTEIRA' });

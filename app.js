@@ -279,9 +279,94 @@ function fotosGaleria(str) {
   const urls = fotosArray(str);
   if (!urls.length) return '';
   return '<div class="photo-gallery">' +
-    urls.map(function (u) { return '<img class="photo-preview" src="' + escapeHtml(u) + '">'; }).join('') +
+    urls.map(function (u) { return '<img class="photo-preview" src="' + escapeHtml(u) + '" alt="Foto (toque para ampliar)" title="Toque para ampliar">'; }).join('') +
   '</div>';
 }
+
+// ---- Visualizador de foto em tela cheia ----
+// Qualquer foto já salva (as de fotosGaleria: validação de inspeção,
+// pendências, manutenções, goteiras...) abre ampliada ao tocar. Um listener
+// só no documento (delegação), então funciona em toda tela sem mexer em
+// cada uma. Setas/deslizar navegam entre as fotos da MESMA galeria; fecha
+// no ✕, tocando fora da foto ou com Esc.
+function fotoEmAltaResolucao(url) {
+  // as fotos são salvas como miniatura do Drive em 1000px (sz=w1000) — no
+  // visualizador pede uma versão maior pra ficar nítida em tela cheia
+  return String(url).replace(/([?&]sz=)w\d+/, '$1w2000');
+}
+
+function linkOriginalDrive(url) {
+  const m = String(url).match(/[?&]id=([^&]+)/);
+  return m ? 'https://drive.google.com/file/d/' + m[1] + '/view' : url;
+}
+
+function abrirVisualizadorFoto(urls, indice) {
+  let i = indice || 0;
+  const multiplas = urls.length > 1;
+  const ov = el(
+    '<div class="lightbox" role="dialog" aria-modal="true" aria-label="Foto ampliada">' +
+      '<div class="lightbox__top">' +
+        '<span class="lightbox__count"></span>' +
+        '<a class="lightbox__btn" target="_blank" rel="noopener" title="Abrir original no Drive">↗ Original</a>' +
+        '<button type="button" class="lightbox__btn lightbox__close" aria-label="Fechar">✕</button>' +
+      '</div>' +
+      '<img class="lightbox__img" alt="Foto ampliada">' +
+      (multiplas
+        ? '<button type="button" class="lightbox__nav lightbox__nav--prev" aria-label="Foto anterior">‹</button>' +
+          '<button type="button" class="lightbox__nav lightbox__nav--next" aria-label="Próxima foto">›</button>'
+        : '') +
+    '</div>'
+  );
+  const img = ov.querySelector('.lightbox__img');
+  const count = ov.querySelector('.lightbox__count');
+  const link = ov.querySelector('a.lightbox__btn');
+
+  function mostrar() {
+    img.src = fotoEmAltaResolucao(urls[i]);
+    img.onerror = function () { img.onerror = null; img.src = urls[i]; }; // se a versão maior falhar, usa a original
+    link.href = linkOriginalDrive(urls[i]);
+    count.textContent = multiplas ? (i + 1) + ' de ' + urls.length : '';
+  }
+  function ir(delta) { i = (i + delta + urls.length) % urls.length; mostrar(); }
+  function fechar() {
+    document.removeEventListener('keydown', onKey);
+    document.body.style.overflow = '';
+    ov.remove();
+  }
+  function onKey(e) {
+    if (e.key === 'Escape') fechar();
+    else if (multiplas && e.key === 'ArrowLeft') ir(-1);
+    else if (multiplas && e.key === 'ArrowRight') ir(1);
+  }
+
+  ov.addEventListener('click', function (e) {
+    if (e.target === ov || e.target.closest('.lightbox__close')) fechar();
+    else if (e.target.closest('.lightbox__nav--prev')) ir(-1);
+    else if (e.target.closest('.lightbox__nav--next')) ir(1);
+  });
+  // deslizar pro lado no celular troca de foto
+  let x0 = null;
+  ov.addEventListener('touchstart', function (e) { x0 = e.touches[0].clientX; }, { passive: true });
+  ov.addEventListener('touchend', function (e) {
+    if (x0 === null || !multiplas) return;
+    const dx = e.changedTouches[0].clientX - x0;
+    if (Math.abs(dx) > 50) ir(dx < 0 ? 1 : -1);
+    x0 = null;
+  });
+  document.addEventListener('keydown', onKey);
+
+  document.body.style.overflow = 'hidden';
+  document.body.appendChild(ov);
+  mostrar();
+  ov.querySelector('.lightbox__close').focus();
+}
+
+document.addEventListener('click', function (e) {
+  const alvo = e.target.closest('.photo-gallery img');
+  if (!alvo) return;
+  const imgs = Array.from(alvo.closest('.photo-gallery').querySelectorAll('img'));
+  abrirVisualizadorFoto(imgs.map(function (im) { return im.getAttribute('src'); }), imgs.indexOf(alvo));
+});
 
 // Componente reutilizável de captura de foto — aceita UMA OU VÁRIAS fotos.
 // Retorna node + getter (sempre um array de data URLs, mesmo vazio).

@@ -2947,23 +2947,17 @@ async function renderResumoGeral() {
     // (UNIDADE = TODAS). Usa o mesmo período escolhido acima; o filtro de
     // armazém não se aplica (cada unidade tem os seus).
     if (String(S.usuario.UNIDADE).toUpperCase() === 'TODAS') {
-      const btnConsolidado = el('<button class="btn btn--primary btn--block">📑 PDF consolidado — todas as unidades (comparativo + análise de cada uma)</button>');
+      const btnConsolidado = el('<button class="btn btn--primary btn--block">📑 PDF consolidado — resumo executivo de todas as unidades</button>');
       body.appendChild(btnConsolidado);
-      body.appendChild(el('<p class="subtle" style="text-align:center;margin-top:-6px">Usa o período escolhido acima. Pode levar alguns minutos.</p>'));
+      body.appendChild(el('<p class="subtle" style="text-align:center;margin-top:-6px">Usa o período escolhido acima. Pode levar cerca de um minuto.</p>'));
       btnConsolidado.onclick = async function () {
         const textoOriginal = btnConsolidado.textContent;
         btnConsolidado.disabled = true;
         try {
-          const unidades = await api('getUnidades', {});
-          const mapasPorUnidade = {};
-          for (const u of unidades) {
-            btnConsolidado.textContent = 'Montando mapas — ' + u.UNIDADE + '…';
-            mapasPorUnidade[u.UNIDADE] = await capturarImagensDosMapas(range, u.UNIDADE).catch(function () { return []; });
-          }
-          btnConsolidado.textContent = 'Gerando PDF consolidado (pode levar alguns minutos)…';
+          btnConsolidado.textContent = 'Gerando PDF consolidado…';
           const resultado = await api('gerarResumoConsolidadoPDF', {
             dataInicial: range.dataInicial, dataFinal: range.dataFinal,
-            periodo: descricaoPeriodo, mapasPorUnidade: mapasPorUnidade,
+            periodo: descricaoPeriodo,
             semAnterior: selPeriodo.value === 'tudo'
           });
           downloadBase64File(resultado.filename, resultado.base64, 'application/pdf');

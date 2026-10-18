@@ -2547,6 +2547,9 @@ async function renderDashInspecoes() {
   if (!d) return;
 
   body.appendChild(el('<p class="subtle">Referente a hoje, ' + escapeHtml(d.data) + '</p>'));
+  if (d.fimDeSemana) {
+    body.appendChild(el('<div class="card" style="background:var(--surface-2,#f4f5f3)"><p class="subtle" style="margin:0">Hoje é fim de semana: inspeção e checklist não são obrigatórios e não contam como não realizados.</p></div>'));
+  }
   body.appendChild(el(
     '<div class="kpi-grid">' +
       kpi(d.inspecoesFeitas + '/' + d.totalArmazens, 'Inspeções feitas hoje') +
@@ -2563,10 +2566,10 @@ async function renderDashInspecoes() {
     d.armazens.forEach(function (a) {
       const inspTag = a.inspecaoFeita
         ? '<span class="tag tag--finalizada">Inspeção ✓ ' + escapeHtml(a.inspecaoHora) + '</span>'
-        : '<span class="tag tag--aberta">Inspeção pendente</span>';
+        : (d.fimDeSemana ? '<span class="tag">Inspeção opcional</span>' : '<span class="tag tag--aberta">Inspeção pendente</span>');
       const chkTag = a.checklistFeito
         ? '<span class="tag tag--finalizada">Limpeza ✓</span>'
-        : '<span class="tag tag--aberta">Limpeza pendente</span>';
+        : (d.fimDeSemana ? '<span class="tag">Limpeza opcional</span>' : '<span class="tag tag--aberta">Limpeza pendente</span>');
       listCard.appendChild(el(
         '<div class="list-item" style="cursor:default;flex-wrap:wrap;gap:8px">' +
           '<span><span class="list-item__title">' + escapeHtml(a.armazem) + '</span>' +

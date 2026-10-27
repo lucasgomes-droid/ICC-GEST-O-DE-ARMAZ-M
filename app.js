@@ -80,6 +80,9 @@ function resetSession() {
   S.usuario = null;
   S.screen = 'loginUnidade';
   S.wizard = null;
+  S.cache = {};
+  S.dashPendFiltro = null;
+  S.pendOverrides = {};
   stopNotificationPolling();
   document.getElementById('topbar').hidden = true;
   document.getElementById('tabbar').hidden = true;
@@ -140,6 +143,21 @@ function refreshTabbarBadges() {
   } else if (badge) {
     badge.remove();
   }
+}
+
+// A lista de armazéns quase nunca muda e era buscada de novo em toda tela
+// (uma ida ao servidor a mais antes de mostrar qualquer dado). Agora fica em
+// memória por unidade enquanto a sessão estiver aberta.
+function getArmazensCached() {
+  const unidade = S.unidade.UNIDADE;
+  if (!S.cache.armazens) S.cache.armazens = {};
+  if (!S.cache.armazens[unidade]) {
+    S.cache.armazens[unidade] = api('getArmazens', { unidade: unidade }).catch(function (e) {
+      delete S.cache.armazens[unidade];
+      throw e;
+    });
+  }
+  return S.cache.armazens[unidade];
 }
 
 // ------------------------- UI HELPERS -------------------------
@@ -864,7 +882,7 @@ function stepArmazem(w, onNext) {
   app.appendChild(container);
   const cardWrap = el('<div class="card stack" id="armazensList"><p class="subtle">Carregando armazéns…</p></div>');
   app.appendChild(cardWrap);
-  api('getArmazens', { unidade: S.unidade.UNIDADE }).then(function (armazens) {
+  getArmazensCached().then(function (armazens) {
     cardWrap.innerHTML = '';
     if (!armazens.length) { cardWrap.innerHTML = '<p class="subtle">Nenhum armazém ativo cadastrado para esta unidade.</p>'; return; }
     armazens.forEach(function (a) {
@@ -1449,7 +1467,7 @@ function renderChecklist() {
     const card = el('<div class="card stack" id="list"><p class="subtle">Carregando…</p></div>');
     app.appendChild(card);
 
-    const buscaArmazens = api('getArmazens', { unidade: S.unidade.UNIDADE });
+    const buscaArmazens = getArmazensCached();
     const buscaProximos = w.periodicidade !== 'DIARIO'
       ? api('getProximosChecklists', { unidade: S.unidade.UNIDADE, periodicidade: w.periodicidade }).catch(function () { return []; })
       : Promise.resolve([]);
@@ -1750,16 +1768,8 @@ function renderPendenciaDetalhe() {
       const btnAprovar = el('<button class="btn btn--primary" style="flex:1">Aprovar e finalizar</button>');
       const btnReprovar = el('<button class="btn btn--danger" style="flex:1">Reprovar</button>');
       row.appendChild(btnAprovar); row.appendChild(btnReprovar);
-      btnAprovar.onclick = async function () {
-        await api('validarPendencia', { idPendencia: p.ID_PENDENCIA, aprovado: true, adminValidador: S.usuario.NOME });
-        toast('Pendência finalizada!', false, true);
-        go(S.origemPendencia || 'dashPendencias');
-      };
-      btnReprovar.onclick = async function () {
-        await api('validarPendencia', { idPendencia: p.ID_PENDENCIA, aprovado: false, adminValidador: S.usuario.NOME });
-        toast('Pendência devolvida para tratamento.', true);
-        go(S.origemPendencia || 'dashPendencias');
-      };
+      btnAprovar.onclick = function () { validarPendenciaRapido(p, true, [btnAprovar, btnReprovar]); };
+      btnReprovar.onclick = function () { validarPendenciaRapido(p, false, [btnAprovar, btnReprovar]); };
     }
   }
 
@@ -1944,7 +1954,7 @@ async function renderConfigChecklist() {
   let itens = [];
   try {
     const res = await Promise.all([
-      api('getArmazens', { unidade: S.unidade.UNIDADE }),
+      getArmazensCached(),
       api('getChecklistItensAdmin', { unidade: S.unidade.UNIDADE })
     ]);
     armazens = res[0]; itens = res[1];
@@ -2208,7 +2218,7 @@ async function renderValidacaoInspecoes() {
   const listWrap = el('<div class="stack" id="list" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
   app.appendChild(listWrap);
 
-  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const armazens = await getArmazensCached().catch(function () { return []; });
   const selArm = document.getElementById('fArmazem');
   armazens.forEach(function (a) { selArm.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
 
@@ -2377,7 +2387,7 @@ async function renderRegistrarPendencia() {
   const card = el('<div class="card stack"></div>');
   app.appendChild(card);
 
-  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const armazens = await getArmazensCached().catch(function () { return []; });
   const ocorrTipos = await api('getOcorrenciasTipos', {}).catch(function () { return []; });
 
   const armazemSel = selectField(card, { label: 'Armazém', options: armazens.map(function (a) { return { value: a.ARMAZEM, label: a.ARMAZEM }; }) });
@@ -2656,7 +2666,7 @@ async function renderRelatorioDetalhe() {
   const body = el('<div class="card stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
   app.appendChild(body);
 
-  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const armazens = await getArmazensCached().catch(function () { return []; });
   const selArmazem = document.getElementById('fArmazem');
   armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
 
@@ -2692,35 +2702,41 @@ async function renderRelatorioDetalhe() {
 
     body.appendChild(el('<div class="row between"><span class="subtle">Registros encontrados</span><span class="badge-count">' + ultimasLinhas.length + '</span></div>'));
 
-    const btnRow = el('<div class="row" style="gap:8px;margin-top:10px"></div>');
+    const btnRow = el('<div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap"></div>');
     body.appendChild(btnRow);
     const btnBaixar = el('<button class="btn btn--primary" style="flex:1">⬇ CSV</button>');
-    const btnPDF = el('<button class="btn btn--accent" style="flex:1">📄 PDF</button>');
+    const btnPDF = el('<button class="btn btn--accent" style="flex:1">📄 PDF com fotos</button>');
     btnRow.appendChild(btnBaixar);
     btnRow.appendChild(btnPDF);
 
     const descricaoPeriodo = descricaoPeriodoDetalhada(selPeriodo.value, range);
+    const filtrosPdf = {
+      unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
+      dataInicial: range.dataInicial, dataFinal: range.dataFinal, periodo: descricaoPeriodo
+    };
 
     btnBaixar.onclick = function () {
       if (!ultimasLinhas.length) { toast('Nenhum registro para baixar com esses filtros', true); return; }
       const nomeArquivo = 'relatorio_' + S.tipoRelatorio + '_' + S.unidade.UNIDADE.replace(/\s+/g, '_') + '_' + dateToBR(new Date()).replace(/\//g, '-') + '.csv';
       downloadCSV(nomeArquivo, cfg.colunas, ultimasLinhas);
     };
-    btnPDF.onclick = async function () {
+    btnPDF.onclick = function () {
       if (!ultimasLinhas.length) { toast('Nenhum registro para baixar com esses filtros', true); return; }
-      btnPDF.disabled = true; btnPDF.textContent = 'Gerando…';
-      try {
-        const resultado = await api('gerarRelatorioPDF', {
-          titulo: cfg.titulo, unidade: S.unidade.UNIDADE, periodo: descricaoPeriodo,
-          colunas: cfg.colunas.map(function (c) { return c[1]; }),
-          chaves: cfg.colunas.map(function (c) { return c[0]; }),
-          linhas: ultimasLinhas
-        });
-        downloadBase64File(resultado.filename, resultado.base64, 'application/pdf');
-        toast('PDF gerado!', false, true);
-      } catch (e) { /* toast já mostrado pelo api() */ }
-      btnPDF.disabled = false; btnPDF.textContent = '📄 PDF';
+      gerarPdfRelatorio(Object.assign({ tipo: S.tipoRelatorio }, filtrosPdf), btnPDF, false);
     };
+
+    // Checklist: atalho pra imprimir só a balança (abre o PDF numa aba nova,
+    // pronto pra mandar pra impressora pelo ícone de imprimir do navegador).
+    if (S.tipoRelatorio === 'checklist') {
+      const qtdBalanca = ultimasLinhas.filter(ehRegistroBalanca).length;
+      const btnBalanca = el('<button class="btn btn--outline btn--block" style="margin-top:8px">⚖️🖨️ Imprimir só a balança (' + qtdBalanca + ')</button>');
+      body.appendChild(btnBalanca);
+      btnBalanca.onclick = function () {
+        if (!qtdBalanca) { toast('Nenhuma verificação da balança com esses filtros', true); return; }
+        gerarPdfRelatorio(Object.assign({ tipo: 'balanca' }, filtrosPdf), btnBalanca, true);
+      };
+    }
+    body.appendChild(el('<p class="subtle" style="font-size:12px;margin:6px 0 0">O PDF sai no mesmo padrão do Resumo Geral, com as fotos dos registros. Com muitas fotos pode levar 1 a 2 minutos.</p>'));
 
     if (ultimasLinhas.length) {
       body.appendChild(el('<div class="divider" style="margin-top:6px"></div>'));
@@ -2733,15 +2749,56 @@ async function renderRelatorioDetalhe() {
   load();
 }
 
+// Registro de checklist que é da balança (mesma regra do backend:
+// nome do item ou resultado próprio do formulário da balança).
+function ehRegistroBalanca(r) {
+  return /balan/i.test(String(r.ITEM || '')) || ['INOPERANTE', 'OBSERVACAO_LEVE', 'CORRETA'].indexOf(r.RESULTADO) !== -1;
+}
+
+function base64ToBlob(base64, mime) {
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+// Gera o PDF da aba Relatórios (backend: gerarRelatorioSlides). Com
+// paraImprimir, abre o PDF numa aba nova (a aba é aberta já no clique, senão
+// o navegador bloqueia como pop-up); se não der pra abrir, baixa o arquivo.
+async function gerarPdfRelatorio(params, btn, paraImprimir) {
+  const textoOriginal = btn.textContent;
+  let aba = null;
+  if (paraImprimir) {
+    aba = window.open('', '_blank');
+    if (aba) aba.document.write('<p style="font-family:sans-serif;padding:24px">Gerando o PDF da balança… pode levar até 1 minuto.</p>');
+  }
+  btn.disabled = true; btn.textContent = 'Gerando PDF…';
+  try {
+    const resultado = await api('gerarRelatorioSlides', params);
+    if (aba && !aba.closed) {
+      aba.location.href = URL.createObjectURL(base64ToBlob(resultado.base64, 'application/pdf'));
+      toast('PDF aberto em outra aba — use o ícone de imprimir.', false, true);
+    } else {
+      downloadBase64File(resultado.filename, resultado.base64, 'application/pdf');
+      toast('PDF gerado!', false, true);
+    }
+  } catch (e) {
+    if (aba && !aba.closed) aba.close();
+  }
+  btn.disabled = false; btn.textContent = textoOriginal;
+}
+
 function buildPreviewTable(colunas, linhas) {
   const table = document.createElement('table');
   table.className = 'report-table';
   const thead = document.createElement('tr');
-  colunas.forEach(function (c) { thead.appendChild(el('<th>' + escapeHtml(c[1]) + '</th>')); });
+  // <th>/<td> não podem ser criados soltos via innerHTML numa <div> (o
+  // navegador descarta), por isso createElement aqui.
+  colunas.forEach(function (c) { const th = document.createElement('th'); th.textContent = c[1]; thead.appendChild(th); });
   table.appendChild(thead);
   linhas.forEach(function (linha) {
     const tr = document.createElement('tr');
-    colunas.forEach(function (c) { tr.appendChild(el('<td>' + escapeHtml(linha[c[0]]) + '</td>')); });
+    colunas.forEach(function (c) { const td = document.createElement('td'); td.textContent = linha[c[0]] == null ? '' : String(linha[c[0]]); tr.appendChild(td); });
     table.appendChild(tr);
   });
   return table;
@@ -2816,7 +2873,7 @@ async function renderResumoGeral() {
   const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
   app.appendChild(body);
 
-  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const armazens = await getArmazensCached().catch(function () { return []; });
   const selArmazem = document.getElementById('fArmazem');
   armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
 
@@ -3071,7 +3128,7 @@ async function renderDashOcorrencias() {
   const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
   app.appendChild(body);
 
-  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const armazens = await getArmazensCached().catch(function () { return []; });
   const selArmazem = document.getElementById('fArmazem');
   armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
 
@@ -3169,7 +3226,7 @@ async function renderManutencoes() {
   const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
   app.appendChild(body);
 
-  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const armazens = await getArmazensCached().catch(function () { return []; });
   const selArmazem = document.getElementById('fArmazem');
   armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
   const selStatus = document.getElementById('fStatus');
@@ -3569,7 +3626,7 @@ async function renderFotosCapturas() {
   const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
   app.appendChild(body);
 
-  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const armazens = await getArmazensCached().catch(function () { return []; });
   const selArmazem = document.getElementById('fArmazem');
   armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
 
@@ -3756,7 +3813,7 @@ async function renderNovaGoteira() {
   const card = el('<div class="card stack"></div>');
   app.appendChild(card);
 
-  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const armazens = await getArmazensCached().catch(function () { return []; });
   const armazemSel = selectField(card, { label: 'Armazém', options: armazens.map(function (a) { return { value: a.ARMAZEM, label: a.ARMAZEM }; }) });
 
   const qtdWrap = el('<div class="row" style="gap:8px;align-items:flex-end"></div>');
@@ -3839,7 +3896,7 @@ async function renderDashCarunchos() {
   const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
   app.appendChild(body);
 
-  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const armazens = await getArmazensCached().catch(function () { return []; });
   const selArmazem = document.getElementById('fArmazem');
   armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
 
@@ -4094,7 +4151,7 @@ async function renderDashChecklist() {
   const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
   app.appendChild(body);
 
-  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const armazens = await getArmazensCached().catch(function () { return []; });
   const selArmazem = document.getElementById('fArmazem');
   armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
 
@@ -4256,7 +4313,7 @@ async function renderDashRondas() {
   const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
   app.appendChild(body);
 
-  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
+  const armazens = await getArmazensCached().catch(function () { return []; });
   const selArmazem = document.getElementById('fArmazem');
   armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
 
@@ -4375,6 +4432,94 @@ async function renderDashRondas() {
   load();
 }
 
+// ------------------------- PENDÊNCIAS: CACHE E VALIDAÇÃO RÁPIDA -------------------------
+// O Dashboard de pendências e a fila de Aprovação guardam a última resposta
+// em memória (por unidade + filtros). Ao voltar pra tela, ela aparece na hora
+// com esses dados e é atualizada em segundo plano. Aprovar/reprovar também
+// não espera mais o servidor: a mudança é aplicada na tela na hora e a
+// gravação na planilha segue em segundo plano. Se a gravação falhar, avisa
+// e recarrega os dados reais.
+//
+// S.pendOverrides guarda as validações recém-feitas ({ de, para, ate }) e é
+// aplicado em cima de qualquer resposta que chegue do servidor enquanto a
+// gravação ainda não apareceu lá (evita a tela "voltar atrás" quando uma
+// leitura antiga chega depois do clique).
+S.pendOverrides = {};
+const PEND_STATUS_CAMPO = { ABERTA: 'abertas', EM_TRATAMENTO: 'emTratamento', AGUARDANDO_VALIDACAO: 'aguardandoValidacao', FINALIZADA: 'finalizadas' };
+
+function overrideAtivo(id) {
+  const o = S.pendOverrides[id];
+  if (!o) return null;
+  if (Date.now() > o.ate) { delete S.pendOverrides[id]; return null; }
+  return o;
+}
+
+// Aplica as validações pendentes numa CÓPIA do resultado do
+// getDashboardPendencias (o cache guarda sempre o dado cru do servidor, pra
+// dar pra saber quando o servidor já tem a mudança).
+function aplicarOverridesDashboard(original) {
+  if (!original || !original.registros) return original;
+  const d = JSON.parse(JSON.stringify(original));
+  d.registros.forEach(function (r) {
+    const o = overrideAtivo(r.ID_PENDENCIA);
+    if (!o) return;
+    if (r.STATUS === o.para) { delete S.pendOverrides[r.ID_PENDENCIA]; return; } // servidor já tem a mudança
+    if (r.STATUS !== o.de) return;
+    if (PEND_STATUS_CAMPO[o.de]) d[PEND_STATUS_CAMPO[o.de]] = Math.max(0, (d[PEND_STATUS_CAMPO[o.de]] || 0) - 1);
+    if (PEND_STATUS_CAMPO[o.para]) d[PEND_STATUS_CAMPO[o.para]] = (d[PEND_STATUS_CAMPO[o.para]] || 0) + 1;
+    r.STATUS = o.para;
+    Object.assign(r, o.extras || {});
+  });
+  return d;
+}
+
+function aplicarOverridesLista(lista) {
+  return (lista || []).filter(function (r) {
+    const o = overrideAtivo(r.ID_PENDENCIA);
+    if (!o) return true;
+    if (r.STATUS === o.para) { delete S.pendOverrides[r.ID_PENDENCIA]; return true; }
+    return r.STATUS !== o.de; // some da fila de aprovação na hora
+  });
+}
+
+function cachePend() {
+  if (!S.cache.pend) S.cache.pend = { dash: {}, aprovacao: {} };
+  return S.cache.pend;
+}
+
+function invalidarCachePendencias() {
+  S.cache.pend = { dash: {}, aprovacao: {} };
+}
+
+// Aprovar/reprovar sem travar a tela: atualiza na hora, volta pra tela de
+// origem e grava em segundo plano.
+function validarPendenciaRapido(p, aprovado, botoes) {
+  const novo = aprovado ? 'FINALIZADA' : 'EM_TRATAMENTO';
+  const agora = dateToBR(new Date()) + ' ' + new Date().toTimeString().slice(0, 5);
+  const extras = { DATA_VALIDACAO: agora, ADMIN_VALIDADOR: S.usuario.NOME };
+  (botoes || []).forEach(function (b) { b.disabled = true; });
+
+  S.pendOverrides[p.ID_PENDENCIA] = { de: p.STATUS, para: novo, extras: extras, ate: Date.now() + 3 * 60 * 1000 };
+
+  const origem = S.origemPendencia || 'dashPendencias';
+  toast(aprovado ? 'Pendência finalizada! Salvando…' : 'Pendência devolvida para tratamento. Salvando…', !aprovado, aprovado);
+  go(origem);
+
+  api('validarPendencia', { idPendencia: p.ID_PENDENCIA, aprovado: aprovado, adminValidador: S.usuario.NOME })
+    .then(function () {
+      // gravou: se o admin ainda está na tela, busca de novo em segundo plano
+      // pra confirmar com os dados reais (a tela não pisca, usa o cache)
+      if (S.screen === 'dashPendencias' || S.screen === 'aprovacaoPendencias') render();
+    })
+    .catch(function () {
+      // gravação falhou: desfaz o que foi mostrado e recarrega os dados reais
+      delete S.pendOverrides[p.ID_PENDENCIA];
+      invalidarCachePendencias();
+      toast('Não foi possível salvar a validação de ' + p.ID_PENDENCIA + '. Tente de novo.', true);
+      if (S.screen === 'dashPendencias' || S.screen === 'aprovacaoPendencias') render();
+    });
+}
+
 async function renderDashPendencias() {
   app.appendChild(el(screenHeader('Dashboard de pendências', S.unidade.UNIDADE)));
 
@@ -4403,58 +4548,85 @@ async function renderDashPendencias() {
   const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
   app.appendChild(body);
 
-  const armazens = await api('getArmazens', { unidade: S.unidade.UNIDADE }).catch(function () { return []; });
   const selArmazem = document.getElementById('fArmazem');
-  armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
-
   const selPeriodo = document.getElementById('fPeriodo');
   const customDates = document.getElementById('customDates');
+
+  // Os filtros escolhidos ficam guardados: ao voltar do detalhe de uma
+  // pendência, a tela reabre no mesmo período/armazém/aba de status.
+  const f = S.dashPendFiltro || (S.dashPendFiltro = { periodo: 'tudo', armazem: '', ini: '', fim: '', status: null });
+  selPeriodo.value = f.periodo;
+  document.getElementById('fDataInicial').value = f.ini;
+  document.getElementById('fDataFinal').value = f.fim;
+  customDates.style.display = f.periodo === 'custom' ? 'flex' : 'none';
+
+  // A lista de armazéns não segura mais a tela: carrega em paralelo com os dados.
+  getArmazensCached().then(function (armazens) {
+    armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
+    selArmazem.value = f.armazem;
+  });
+
+  function salvarFiltros() {
+    f.periodo = selPeriodo.value;
+    f.armazem = selArmazem.value;
+    f.ini = document.getElementById('fDataInicial').value;
+    f.fim = document.getElementById('fDataFinal').value;
+  }
   selPeriodo.onchange = function () {
     customDates.style.display = selPeriodo.value === 'custom' ? 'flex' : 'none';
-    if (selPeriodo.value !== 'custom') load();
+    if (selPeriodo.value !== 'custom') { salvarFiltros(); load(); }
   };
-  document.getElementById('btnAplicar').onclick = load;
-  selArmazem.onchange = load;
+  document.getElementById('btnAplicar').onclick = function () { salvarFiltros(); load(); };
+  selArmazem.onchange = function () { salvarFiltros(); load(); };
+
+  let geracao = 0;
 
   async function load() {
-    body.innerHTML = '<p class="subtle">Carregando…</p>';
+    const minhaGeracao = ++geracao;
     let range = { dataInicial: '', dataFinal: '' };
-    if (selPeriodo.value === 'custom') {
-      const ini = document.getElementById('fDataInicial').value;
-      const fim = document.getElementById('fDataFinal').value;
-      if (ini) range.dataInicial = dateToBR(new Date(ini + 'T00:00:00'));
-      if (fim) range.dataFinal = dateToBR(new Date(fim + 'T00:00:00'));
+    if (f.periodo === 'custom') {
+      if (f.ini) range.dataInicial = dateToBR(new Date(f.ini + 'T00:00:00'));
+      if (f.fim) range.dataFinal = dateToBR(new Date(f.fim + 'T00:00:00'));
     } else {
-      range = periodoRange(selPeriodo.value);
+      range = periodoRange(f.periodo);
     }
-    const d = await api('getDashboardPendencias', {
-      unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
-      dataInicial: range.dataInicial, dataFinal: range.dataFinal
-    }).catch(function () { return null; });
+    const params = { unidade: S.unidade.UNIDADE, armazem: f.armazem, dataInicial: range.dataInicial, dataFinal: range.dataFinal };
+    if (f.periodo !== 'tudo') {
+      const rangeAnterior = periodoAnteriorRange(range);
+      if (rangeAnterior) { params.dataInicialAnterior = rangeAnterior.dataInicial; params.dataFinalAnterior = rangeAnterior.dataFinal; }
+    }
+    const chave = JSON.stringify(params);
+    const c = cachePend();
+
+    if (c.dash[chave]) {
+      desenhar(aplicarOverridesDashboard(c.dash[chave].d), true);
+    } else {
+      body.innerHTML = '<p class="subtle">Carregando…</p>';
+    }
+
+    const d = await api('getDashboardPendencias', params).catch(function () { return null; });
+    if (minhaGeracao !== geracao || S.screen !== 'dashPendencias') return; // filtro mudou ou saiu da tela
+    if (!d) { if (!c.dash[chave]) body.innerHTML = ''; else marcarAtualizando(false); return; }
+    c.dash[chave] = { d: d, em: Date.now() };
+    desenhar(aplicarOverridesDashboard(d), false);
+  }
+
+  function marcarAtualizando(sim) {
+    const aviso = body.querySelector('[data-role="atualizando"]');
+    if (aviso) aviso.hidden = !sim;
+  }
+
+  function desenhar(d, atualizando) {
+    const scrollY = window.scrollY;
     body.innerHTML = '';
-    if (!d) return;
+    body.appendChild(el('<p class="subtle" data-role="atualizando" style="margin:0;font-size:12px"' + (atualizando ? '' : ' hidden') + '>↻ Atualizando…</p>'));
 
     let comparativoHtml = '';
-    if (selPeriodo.value !== 'tudo') {
-      const rangeAnterior = periodoAnteriorRange(range);
-      if (rangeAnterior) {
-        const dAnterior = await api('getDashboardPendencias', {
-          unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
-          dataInicial: rangeAnterior.dataInicial, dataFinal: rangeAnterior.dataFinal
-        }).catch(function () { return null; });
-        if (dAnterior) comparativoHtml = comparativoBadge(d.total, dAnterior.total, true);
-      }
-    }
+    if (d.totalAnterior !== undefined && d.totalAnterior !== null) comparativoHtml = comparativoBadge(d.total, d.totalAnterior, true);
 
-    // Os 4 KPIs (Abertas/Em tratamento/Aguard. validação/Finalizadas) agora
-    // são abas clicáveis: clicar numa filtra a lista "Pendências recentes"
-    // logo abaixo só pra aquele status (clicar de novo na mesma, ou em "Ver
-    // todas", limpa o filtro). Os números continuam vindo prontos do
-    // backend (já filtrados por período/armazém) — só a lista é refiltrada
-    // no navegador, sem nova chamada à API. O gráfico de score continua
-    // somando QUALQUER status (é a definição documentada do score — não
-    // muda com essa aba).
-    let filtroStatus = null;
+    // Os 4 KPIs são abas clicáveis que filtram a lista "Pendências recentes"
+    // (só no navegador, sem nova chamada à API). O score continua somando
+    // QUALQUER status (definição documentada do score).
     const statusDefs = [
       { key: 'ABERTA', valor: d.abertas, label: 'Abertas' },
       { key: 'EM_TRATAMENTO', valor: d.emTratamento, label: 'Em tratamento' },
@@ -4466,16 +4638,8 @@ async function renderDashPendencias() {
 
     if (comparativoHtml) body.appendChild(el('<div style="margin-top:-4px">' + comparativoHtml + ' <span class="subtle" style="font-size:12.5px">em pendências abertas no período</span></div>'));
 
-    if (d.score) {
-      const cardGeral = scoreGeralCard(d.score);
-      if (cardGeral) body.appendChild(cardGeral);
-      body.appendChild(scorePorArmazemCard(d.score));
-    }
-
-    body.appendChild(barCard('Por armazém', d.porArmazem));
-    body.appendChild(barCard('Por ocorrência', d.porOcorrencia));
-    body.appendChild(evolucaoCard('Evolução das pendências por data', d.registros, function (r) { return String(r.DATA_ABERTURA || '').split(' ')[0]; }));
-
+    // A lista vem logo depois dos KPIs: é o que se usa no dia a dia, e assim
+    // ela não fica embaixo de todos os gráficos.
     const listCard = el(
       '<div class="card stack">' +
         '<div class="row between">' +
@@ -4490,10 +4654,19 @@ async function renderDashPendencias() {
     const tituloLista = listCard.querySelector('#listaPendTitulo');
     const btnLimpar = listCard.querySelector('#btnLimparFiltroStatus');
 
+    if (d.score) {
+      const cardGeral = scoreGeralCard(d.score);
+      if (cardGeral) body.appendChild(cardGeral);
+      body.appendChild(scorePorArmazemCard(d.score));
+    }
+    body.appendChild(barCard('Por armazém', d.porArmazem));
+    body.appendChild(barCard('Por ocorrência', d.porOcorrencia));
+    body.appendChild(evolucaoCard('Evolução das pendências por data', d.registros, function (r) { return String(r.DATA_ABERTURA || '').split(' ')[0]; }));
+
     function renderKpiTabs() {
       kpiWrap.innerHTML = '';
       statusDefs.forEach(function (s) {
-        const ativo = filtroStatus === s.key;
+        const ativo = f.status === s.key;
         const btn = el(
           '<button type="button" class="kpi kpi--clicavel' + (ativo ? ' is-active' : '') + '">' +
             '<span class="badge-count">' + escapeHtml(s.valor) + '</span>' +
@@ -4501,7 +4674,7 @@ async function renderDashPendencias() {
           '</button>'
         );
         btn.onclick = function () {
-          filtroStatus = ativo ? null : s.key;
+          f.status = ativo ? null : s.key;
           renderKpiTabs();
           renderLista();
         };
@@ -4510,16 +4683,17 @@ async function renderDashPendencias() {
     }
 
     function renderLista() {
-      const def = statusDefs.find(function (s) { return s.key === filtroStatus; });
+      const def = statusDefs.find(function (s) { return s.key === f.status; });
       tituloLista.textContent = def ? 'Pendências — ' + def.label : 'Pendências recentes';
-      btnLimpar.hidden = !filtroStatus;
-      const base = filtroStatus ? d.registros.filter(function (r) { return r.STATUS === filtroStatus; }) : d.registros;
-      renderPendenciasList(listInner, base.slice(0, 12), function (p) { go('pendenciaDetalhe', { pendenciaAtual: p, origemPendencia: 'dashPendencias' }); });
+      btnLimpar.hidden = !f.status;
+      const base = f.status ? d.registros.filter(function (r) { return r.STATUS === f.status; }) : d.registros;
+      renderPendenciasList(listInner, base, function (p) { go('pendenciaDetalhe', { pendenciaAtual: p, origemPendencia: 'dashPendencias' }); });
     }
-    btnLimpar.onclick = function () { filtroStatus = null; renderKpiTabs(); renderLista(); };
+    btnLimpar.onclick = function () { f.status = null; renderKpiTabs(); renderLista(); };
 
     renderKpiTabs();
     renderLista();
+    window.scrollTo(0, scrollY);
   }
   load();
 }
@@ -4527,22 +4701,33 @@ async function renderDashPendencias() {
 // ------------------------- ADMIN: APROVAÇÃO DE PENDÊNCIAS -------------------------
 // Tela própria só com o que precisa de AÇÃO do admin agora (soluções enviadas
 // pelo conferente aguardando aprovar/reprovar) — separada do "Dashboard de
-// pendências" (que é visão geral/estatística), pra ficar claro o que é fila
-// de trabalho e o que é painel de acompanhamento.
+// pendências" (que é visão geral/estatística). Mesmo esquema de cache do
+// dashboard: abre na hora com a última lista e atualiza em segundo plano.
 async function renderAprovacaoPendencias() {
   app.appendChild(el(screenHeader('Aprovação de pendências', S.unidade.UNIDADE, 'Soluções enviadas pelos conferentes, aguardando sua validação')));
   const listWrap = el('<div class="stack" id="list" style="margin-top:8px"><p class="subtle">Carregando…</p></div>');
   app.appendChild(listWrap);
 
-  try {
-    const pend = await api('getPendencias', { unidade: S.unidade.UNIDADE, status: 'AGUARDANDO_VALIDACAO' });
+  const chave = S.unidade.UNIDADE;
+  const c = cachePend();
+
+  function desenhar(pend) {
     listWrap.innerHTML = '';
     if (!pend.length) {
       listWrap.appendChild(el('<div class="empty"><span class="ic">✅</span>Nenhuma pendência aguardando aprovação no momento.</div>'));
       return;
     }
     renderPendenciasList(listWrap, pend, function (p) { go('pendenciaDetalhe', { pendenciaAtual: p, origemPendencia: 'aprovacaoPendencias' }); });
-  } catch (e) { /* toast já mostrado */ }
+  }
+
+  if (c.aprovacao[chave]) desenhar(aplicarOverridesLista(c.aprovacao[chave]));
+
+  try {
+    const pend = await api('getPendencias', { unidade: S.unidade.UNIDADE, status: 'AGUARDANDO_VALIDACAO' });
+    if (S.screen !== 'aprovacaoPendencias') return;
+    c.aprovacao[chave] = pend;
+    desenhar(aplicarOverridesLista(pend));
+  } catch (e) { if (!c.aprovacao[chave]) listWrap.innerHTML = ''; }
 }
 
 function kpi(value, label) {

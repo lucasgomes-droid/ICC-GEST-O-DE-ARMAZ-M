@@ -3113,6 +3113,7 @@ async function renderDashOcorrencias() {
         '<option value="custom">Período personalizado</option>' +
       '</select>' +
       '<select id="fArmazem"><option value="">Todos os armazéns</option></select>' +
+      '<select id="fTipo"><option value="">Todos os tipos</option></select>' +
     '</div>'
   );
   app.appendChild(filterWrap);
@@ -3128,20 +3129,47 @@ async function renderDashOcorrencias() {
   const body = el('<div class="stack" id="body" style="margin-top:12px"><p class="subtle">Carregando…</p></div>');
   app.appendChild(body);
 
-  const armazens = await getArmazensCached().catch(function () { return []; });
   const selArmazem = document.getElementById('fArmazem');
-  armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
-
+  const selTipo = document.getElementById('fTipo');
   const selPeriodo = document.getElementById('fPeriodo');
   const customDates = document.getElementById('customDates');
+
+  getArmazensCached().catch(function () { return []; }).then(function (armazens) {
+    armazens.forEach(function (a) { selArmazem.appendChild(el('<option value="' + escapeHtml(a.ARMAZEM) + '">' + escapeHtml(a.ARMAZEM) + '</option>')); });
+  });
+
+  // Filtro de tipo (critério): os 3 tipos fixos da inspeção sempre aparecem;
+  // qualquer outro tipo que exista nos registros entra na lista também.
+  const TIPOS_FIXOS = ['Produto avariado', 'Goteira', 'Risco de queda/tombamento'];
+  function atualizarOpcoesTipo(registros) {
+    const atual = selTipo.value;
+    const tipos = TIPOS_FIXOS.slice();
+    registros.forEach(function (r) { if (r.TIPO && tipos.indexOf(r.TIPO) === -1) tipos.push(r.TIPO); });
+    selTipo.innerHTML = '<option value="">Todos os tipos</option>' +
+      tipos.map(function (t) { return '<option value="' + escapeHtml(t) + '">' + escapeHtml(t) + '</option>'; }).join('');
+    selTipo.value = tipos.indexOf(atual) !== -1 ? atual : '';
+  }
+
   selPeriodo.onchange = function () {
     customDates.style.display = selPeriodo.value === 'custom' ? 'flex' : 'none';
     if (selPeriodo.value !== 'custom') load();
   };
   document.getElementById('btnAplicar').onclick = load;
   selArmazem.onchange = load;
+  // Trocar o tipo não chama o servidor: refiltra os dados já carregados.
+  selTipo.onchange = function () { if (ultimo) desenhar(); };
+
+  let ultimo = null; // { d, dAnterior }
+  let geracao = 0;
+
+  function contarPor(lista, campo) {
+    const out = {};
+    lista.forEach(function (r) { const k = r[campo] || '—'; out[k] = (out[k] || 0) + 1; });
+    return out;
+  }
 
   async function load() {
+    const minha = ++geracao;
     body.innerHTML = '<p class="subtle">Carregando…</p>';
     let range = { dataInicial: '', dataFinal: '' };
     if (selPeriodo.value === 'custom') {
@@ -3152,54 +3180,82 @@ async function renderDashOcorrencias() {
     } else {
       range = periodoRange(selPeriodo.value);
     }
-    const d = await api('getDashboardOcorrencias', {
-      unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
-      dataInicial: range.dataInicial, dataFinal: range.dataFinal
-    }).catch(function () { return null; });
+    const base = { unidade: S.unidade.UNIDADE, armazem: selArmazem.value };
+    const rangeAnterior = selPeriodo.value !== 'tudo' ? periodoAnteriorRange(range) : null;
+    // período atual e anterior em paralelo (antes era um depois do outro)
+    const res = await Promise.all([
+      api('getDashboardOcorrencias', Object.assign({}, base, range)).catch(function () { return null; }),
+      rangeAnterior ? api('getDashboardOcorrencias', Object.assign({}, base, rangeAnterior)).catch(function () { return null; }) : Promise.resolve(null)
+    ]);
+    if (minha !== geracao || S.screen !== 'dashOcorrencias') return;
+    if (!res[0]) { body.innerHTML = ''; return; }
+    ultimo = { d: res[0], dAnterior: res[1] };
+    atualizarOpcoesTipo(res[0].registros || []);
+    desenhar();
+  }
+
+  function desenhar() {
+    const d = ultimo.d, dAnterior = ultimo.dAnterior;
+    const tipo = selTipo.value;
+    const regs = tipo ? d.registros.filter(function (r) { return r.TIPO === tipo; }) : d.registros;
     body.innerHTML = '';
-    if (!d) return;
 
     let comparativoHtml = '';
-    if (selPeriodo.value !== 'tudo') {
-      const rangeAnterior = periodoAnteriorRange(range);
-      if (rangeAnterior) {
-        const dAnterior = await api('getDashboardOcorrencias', {
-          unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
-          dataInicial: rangeAnterior.dataInicial, dataFinal: rangeAnterior.dataFinal
-        }).catch(function () { return null; });
-        if (dAnterior) comparativoHtml = comparativoBadge(d.total, dAnterior.total, true);
-      }
+    if (dAnterior) {
+      const totalAnt = tipo ? dAnterior.registros.filter(function (r) { return r.TIPO === tipo; }).length : dAnterior.total;
+      comparativoHtml = comparativoBadge(regs.length, totalAnt, true);
     }
 
-    body.appendChild(el(
-      '<div class="kpi-grid">' +
-        kpi(d.total, 'Total de ocorrências') +
-        kpi(d.produtoAvariado.total, 'Produto avariado') +
-        kpi(d.goteira.total, 'Goteiras') +
-        kpi(d.riscoQuedaTombamento.total, 'Risco queda/tombamento') +
-      '</div>'
-    ));
+    if (!tipo) {
+      body.appendChild(el(
+        '<div class="kpi-grid">' +
+          kpi(d.total, 'Total de ocorrências') +
+          kpi(d.produtoAvariado.total, 'Produto avariado') +
+          kpi(d.goteira.total, 'Goteiras') +
+          kpi(d.riscoQuedaTombamento.total, 'Risco queda/tombamento') +
+        '</div>'
+      ));
+    } else {
+      const porArm = contarPor(regs, 'ARMAZEM');
+      const topo = Object.keys(porArm).sort(function (a, b) { return porArm[b] - porArm[a]; })[0];
+      const pct = d.total ? Math.round(regs.length / d.total * 100) : 0;
+      body.appendChild(el(
+        '<div class="kpi-grid">' +
+          kpi(regs.length, tipo) +
+          kpi(pct + '%', 'do total de ocorrências') +
+          kpi(Object.keys(porArm).length, 'Armazéns com registro') +
+          kpi(topo ? topo + ' (' + porArm[topo] + ')' : '—', 'Armazém com mais') +
+        '</div>'
+      ));
+    }
     if (comparativoHtml) body.appendChild(el('<div style="margin-top:-4px">' + comparativoHtml + '</div>'));
 
-    body.appendChild(barCard('Ocorrências por armazém (todos os tipos)', d.porArmazem));
-    body.appendChild(barCard('Produto avariado por armazém', d.produtoAvariado.porArmazem));
-    body.appendChild(barCard('Goteiras por armazém', d.goteira.porArmazem));
-    body.appendChild(barCard('Risco de queda/tombamento por armazém', d.riscoQuedaTombamento.porArmazem));
-    body.appendChild(evolucaoCard('Evolução das ocorrências por data', d.registros));
+    if (!tipo) {
+      body.appendChild(barCard('Ocorrências por armazém (todos os tipos)', d.porArmazem));
+      body.appendChild(barCard('Produto avariado por armazém', d.produtoAvariado.porArmazem));
+      body.appendChild(barCard('Goteiras por armazém', d.goteira.porArmazem));
+      body.appendChild(barCard('Risco de queda/tombamento por armazém', d.riscoQuedaTombamento.porArmazem));
+      body.appendChild(evolucaoCard('Evolução das ocorrências por data', regs));
+    } else {
+      body.appendChild(barCard(tipo + ' por armazém', contarPor(regs, 'ARMAZEM')));
+      body.appendChild(evolucaoCard('Evolução — ' + tipo, regs));
+    }
 
-    if (d.registros.length) {
-      const listCard = el('<div class="card stack"><h3 class="title-lg">Ocorrências recentes</h3></div>');
+    if (regs.length) {
+      const listCard = el('<div class="card stack"><h3 class="title-lg">' + escapeHtml(tipo ? 'Ocorrências — ' + tipo : 'Ocorrências recentes') + '</h3></div>');
       body.appendChild(listCard);
       const tableWrap = el('<div style="overflow-x:auto"></div>');
       listCard.appendChild(tableWrap);
-      const recentes = d.registros.slice().sort(function (a, b) {
+      const recentes = regs.slice().sort(function (a, b) {
         const da = parseBR(a.DATA), db = parseBR(b.DATA);
         return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
-      }).slice(0, 15);
+      }).slice(0, tipo ? 50 : 15);
       tableWrap.appendChild(buildPreviewTable(
         [['DATA', 'Data'], ['ARMAZEM', 'Armazém'], ['TIPO', 'Tipo'], ['DESCRICAO', 'Descrição'], ['USUARIO', 'Conferente']],
         recentes
       ));
+    } else {
+      body.appendChild(el('<div class="empty"><span class="ic">✅</span>Nenhuma ocorrência desse tipo com esses filtros.</div>'));
     }
   }
   load();

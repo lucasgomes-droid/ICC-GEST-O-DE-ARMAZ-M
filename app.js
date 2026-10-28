@@ -3189,7 +3189,7 @@ async function renderDashOcorrencias() {
     ]);
     if (minha !== geracao || S.screen !== 'dashOcorrencias') return;
     if (!res[0]) { body.innerHTML = ''; return; }
-    ultimo = { d: res[0], dAnterior: res[1] };
+    ultimo = { d: res[0], dAnterior: res[1], range: range };
     atualizarOpcoesTipo(res[0].registros || []);
     desenhar();
   }
@@ -3229,6 +3229,19 @@ async function renderDashOcorrencias() {
       ));
     }
     if (comparativoHtml) body.appendChild(el('<div style="margin-top:-4px">' + comparativoHtml + '</div>'));
+
+    // PDF no padrão do Resumo Geral, com as fotos, respeitando os 3 filtros.
+    const btnPDF = el('<button class="btn btn--accent btn--block">📄 PDF com fotos' + (tipo ? ' — ' + escapeHtml(tipo) : '') + '</button>');
+    body.appendChild(btnPDF);
+    btnPDF.onclick = function () {
+      if (!regs.length) { toast('Nenhuma ocorrência para gerar com esses filtros', true); return; }
+      gerarPdfRelatorio({
+        tipo: 'ocorrencias', tipoOcorrencia: tipo,
+        unidade: S.unidade.UNIDADE, armazem: selArmazem.value,
+        dataInicial: ultimo.range.dataInicial, dataFinal: ultimo.range.dataFinal,
+        periodo: descricaoPeriodoDetalhada(selPeriodo.value, ultimo.range)
+      }, btnPDF, false);
+    };
 
     if (!tipo) {
       body.appendChild(barCard('Ocorrências por armazém (todos os tipos)', d.porArmazem));

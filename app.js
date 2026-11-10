@@ -864,6 +864,7 @@ function renderInspecao() {
   if (w.step === 'quedaTombamento') return stepMultiplo(w, {
     titulo: 'Existem cargas ou baias com risco de tombamento?', itemLabel: 'Risco', perguntaQuantidade: 'Quantos pontos de risco foram encontrados?',
     tipoOcorrencia: 'Risco de tombamento', next: 'carunchos',
+    pedirCriticidade: true, // só esta pergunta pede Baixo/Médio/Alto
     campos: [{ key: 'local', label: 'Qual local/baia?' }, { key: 'acoes', label: 'Quais ações foram realizadas para eliminar o risco?', multiline: true }, { key: 'obs', label: 'Observação', multiline: true }],
     montarDescricao: function (v) { return 'Local/baia: ' + v.local + ' — Ações: ' + v.acoes + (v.obs ? ' — Obs: ' + v.obs : ''); }
   });
@@ -1147,8 +1148,11 @@ function stepMultiplo(w, opts) {
         opts.campos.forEach(function (c) {
           camposRefs[c.key] = textField(box, { label: c.label, multiline: !!c.multiline });
         });
+        const crit = opts.pedirCriticidade
+          ? selectField(box, { label: 'Criticidade do risco *', options: PENDENCIA_CRITICIDADES.map(function (c) { return { value: c, label: c }; }) })
+          : null;
         const foto = photoField(box, { label: opts.fotoLabel || 'Foto', required: true });
-        entries.push({ campos: camposRefs, foto: foto });
+        entries.push({ campos: camposRefs, foto: foto, crit: crit });
       }
     };
   });
@@ -1160,13 +1164,14 @@ function stepMultiplo(w, opts) {
     if (val === null) { toast('Selecione Sim ou Não', true); return; }
     if (val) {
       if (!entries.length) { toast('Gere e preencha os formulários', true); return; }
-      for (const e of entries) {
-        if (!e.foto.getValue().length) { toast('A foto é obrigatória em todos os registros', true); return; }
+      for (let i = 0; i < entries.length; i++) {
+        if (entries[i].crit && !entries[i].crit.getValue()) { toast('Escolha a criticidade (baixo, médio ou alto) do ' + opts.itemLabel.toLowerCase() + ' ' + (i + 1), true); return; }
+        if (!entries[i].foto.getValue().length) { toast('A foto é obrigatória em todos os registros', true); return; }
       }
       entries.forEach(function (e) {
         const valores = {};
         Object.keys(e.campos).forEach(function (k) { valores[k] = e.campos[k].getValue(); });
-        w.ocorrencias.push({ tipo: opts.tipoOcorrencia, descricao: opts.montarDescricao(valores), fotos: e.foto.getValue() });
+        w.ocorrencias.push({ tipo: opts.tipoOcorrencia, descricao: opts.montarDescricao(valores), fotos: e.foto.getValue(), criticidade: e.crit ? e.crit.getValue() : '' });
       });
     }
     w.step = opts.next;
@@ -1363,7 +1368,7 @@ function stepRevisao(w) {
   } else {
     w.ocorrencias.forEach(function (o) {
       const qtdFotos = (o.fotos || []).length;
-      card.appendChild(el('<div class="list-item" style="cursor:default"><span><span class="list-item__title">' + escapeHtml(o.tipo) + '</span><div class="list-item__sub">' + escapeHtml(o.descricao) + '</div></span>' + (qtdFotos ? '<span>📷 ' + qtdFotos + '</span>' : '') + '</div>'));
+      card.appendChild(el('<div class="list-item" style="cursor:default"><span><span class="list-item__title">' + escapeHtml(o.tipo + (o.criticidade ? ' (' + o.criticidade + ')' : '')) + '</span><div class="list-item__sub">' + escapeHtml(o.descricao) + '</div></span>' + (qtdFotos ? '<span>📷 ' + qtdFotos + '</span>' : '') + '</div>'));
     });
     w.capturas.forEach(function (c) {
       const qtdFotosCap = (c.fotos || []).length;
@@ -2314,7 +2319,7 @@ async function renderInspecaoDetalheAdmin() {
     det.ocorrencias.forEach(function (o) {
       const box = el(
         '<div class="stack" style="padding:10px 0;border-bottom:1px solid var(--line)">' +
-          '<div class="row between"><strong>' + escapeHtml(o.TIPO) + '</strong>' +
+          '<div class="row between"><strong>' + escapeHtml(tituloTipoPendencia(o)) + '</strong>' +
           '<button type="button" class="btn btn--outline btn--sm" data-role="btnEditar">✏️ Editar</button></div>' +
           '<p class="subtle" data-role="descricaoTexto">' + escapeHtml(o.DESCRICAO) + '</p>' +
           (o.DESCRICAO_ORIGINAL ? '<p class="subtle" style="font-size:11.5px;color:var(--st-risco)">Original: ' + escapeHtml(o.DESCRICAO_ORIGINAL) + '</p>' : '') +
@@ -2453,6 +2458,34 @@ async function renderRegistrarPendencia() {
   }
   function criticidade() { return tipoSel.getValue() === TIPO_RISCO_TOMBAMENTO ? critSel.getValue() : ''; }
 
+  // Trava de pendência repetida (Decisão 20): com armazém + endereço + tipo
+  // preenchidos, pergunta ao servidor se alguém já registrou a mesma nas
+  // últimas 24 h. Se sim, mostra quem e bloqueia o botão de registrar. O
+  // servidor confere de novo na hora de gravar (caso duas pessoas enviem
+  // juntas).
+  const avisoDup = el('<div class="card" style="display:none;border-left:4px solid #D64545;background:#fdf1f1;padding:12px"></div>');
+  card.appendChild(avisoDup);
+  let duplicada = null, verifGeracao = 0, timerVerif = null;
+  function botoesRegistrar() { return card.querySelectorAll('[data-role="btnRegistrar"]'); }
+  function aplicarTrava() {
+    botoesRegistrar().forEach(function (b) { b.disabled = !!duplicada; });
+    avisoDup.style.display = duplicada ? 'block' : 'none';
+    if (duplicada) avisoDup.innerHTML = '<strong>⚠️ Essa pendência já foi pontuada</strong><p style="margin:6px 0 0">' + escapeHtml(duplicada.mensagem) + '</p>';
+  }
+  async function verificarDuplicada() {
+    const minha = ++verifGeracao;
+    const params = { unidade: S.unidade.UNIDADE, armazem: armazemSel.getValue(), endereco: enderecoField.getValue(), tipo: tipoSel.getValue() };
+    if (!params.armazem || !params.endereco || !params.tipo) { duplicada = null; aplicarTrava(); return; }
+    const r = await api('verificarPendenciaDuplicada', params).catch(function () { return null; });
+    if (minha !== verifGeracao) return;
+    duplicada = r || null;
+    aplicarTrava();
+  }
+  function agendarVerificacao() { clearTimeout(timerVerif); timerVerif = setTimeout(verificarDuplicada, 500); }
+  armazemSel.select.addEventListener('change', agendarVerificacao);
+  tipoSel.select.addEventListener('change', agendarVerificacao);
+  enderecoField.node.querySelector('input').addEventListener('input', agendarVerificacao);
+
   // Registro a partir de uma inspeção (vindo do detalhe de uma inspeção) já
   // está amarrado àquela inspeção específica — continua sendo sempre 1
   // registro só, sem a opção de quantidade abaixo (essa é só pro manual).
@@ -2462,12 +2495,13 @@ async function renderRegistrarPendencia() {
     const descField = textField(descWrap, { label: 'Descrição adicional (opcional)', multiline: true });
     const foto = photoField(card, { label: 'Foto/evidência' });
 
-    const btn = el('<button class="btn btn--primary btn--block" style="margin-top:6px">Registrar pendência</button>');
+    const btn = el('<button class="btn btn--primary btn--block" data-role="btnRegistrar" style="margin-top:6px">Registrar pendência</button>');
     card.appendChild(btn);
     btn.onclick = async function () {
       if (!armazemSel.getValue()) { toast('Selecione o armazém', true); return; }
       if (!tipoSel.getValue()) { toast('Selecione a ocorrência', true); return; }
       if (!criticidadeValida()) return;
+      if (duplicada) { toast(duplicada.mensagem, true); return; }
       btn.disabled = true; btn.textContent = 'Registrando…';
       try {
         const data = await api('createPendencia', {
@@ -2480,7 +2514,7 @@ async function renderRegistrarPendencia() {
         toast('Pendência ' + data.idPendencia + ' registrada para ' + (data.responsavel || 'responsável não definido') + '.', false, true);
         S.pendenciaOrigemInspecao = null;
         go('dashPendencias');
-      } catch (e) { btn.disabled = false; btn.textContent = 'Registrar pendência'; }
+      } catch (e) { btn.disabled = false; btn.textContent = 'Registrar pendência'; verificarDuplicada(); }
     };
     return;
   }
@@ -2520,13 +2554,14 @@ async function renderRegistrarPendencia() {
   btnGerar.onclick = gerarFormularios;
   gerarFormularios();
 
-  const btn = el('<button class="btn btn--primary btn--block" style="margin-top:6px">Registrar pendência(s)</button>');
+  const btn = el('<button class="btn btn--primary btn--block" data-role="btnRegistrar" style="margin-top:6px">Registrar pendência(s)</button>');
   card.appendChild(btn);
   btn.onclick = async function () {
     if (!armazemSel.getValue()) { toast('Selecione o armazém', true); return; }
     if (!tipoSel.getValue()) { toast('Selecione a ocorrência', true); return; }
     if (!entries.length) { toast('Gere pelo menos um formulário', true); return; }
     if (!criticidadeValida()) return;
+    if (duplicada) { toast(duplicada.mensagem, true); return; }
     const tipoFinal = tipoSel.getValue();
 
     btn.disabled = true; btn.textContent = entries.length > 1 ? 'Registrando ' + entries.length + '…' : 'Registrando…';
@@ -2541,6 +2576,7 @@ async function renderRegistrarPendencia() {
       go('dashPendencias');
     } catch (e) {
       btn.disabled = false; btn.textContent = 'Registrar pendência(s)';
+      verificarDuplicada();
     }
   };
 }
@@ -3310,7 +3346,7 @@ async function renderDashOcorrencias() {
         return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
       }).slice(0, tipo ? 50 : 15);
       tableWrap.appendChild(buildPreviewTable(
-        [['DATA', 'Data'], ['ARMAZEM', 'Armazém'], ['TIPO', 'Tipo'], ['DESCRICAO', 'Descrição'], ['USUARIO', 'Conferente']],
+        [['DATA', 'Data'], ['ARMAZEM', 'Armazém'], ['TIPO', 'Tipo'], ['CRITICIDADE', 'Criticidade'], ['DESCRICAO', 'Descrição'], ['USUARIO', 'Conferente']],
         recentes
       ));
     } else {

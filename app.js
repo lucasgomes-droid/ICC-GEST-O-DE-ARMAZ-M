@@ -611,8 +611,7 @@ function render() {
     dashPendencias: renderDashPendencias,
     configChecklist: renderConfigChecklist,
     dashboard: renderDashboardHub,
-    aprovacaoPendencias: renderAprovacaoPendencias,
-    relatorioMensal: renderRelatorioMensal
+    aprovacaoPendencias: renderAprovacaoPendencias
   };
   (screens[S.screen] || renderLoginUnidade)();
   updateChrome();
@@ -863,8 +862,8 @@ function renderInspecao() {
   if (w.step === 'goteira') return stepGoteira(w);
 
   if (w.step === 'quedaTombamento') return stepMultiplo(w, {
-    titulo: 'Existem cargas ou baias com risco de queda ou tombamento?', itemLabel: 'Risco', perguntaQuantidade: 'Quantos pontos de risco foram encontrados?',
-    tipoOcorrencia: 'Risco de queda/tombamento', next: 'carunchos',
+    titulo: 'Existem cargas ou baias com risco de tombamento?', itemLabel: 'Risco', perguntaQuantidade: 'Quantos pontos de risco foram encontrados?',
+    tipoOcorrencia: 'Risco de tombamento', next: 'carunchos',
     campos: [{ key: 'local', label: 'Qual local/baia?' }, { key: 'acoes', label: 'Quais ações foram realizadas para eliminar o risco?', multiline: true }, { key: 'obs', label: 'Observação', multiline: true }],
     montarDescricao: function (v) { return 'Local/baia: ' + v.local + ' — Ações: ' + v.acoes + (v.obs ? ' — Obs: ' + v.obs : ''); }
   });
@@ -1109,7 +1108,7 @@ function stepGoteira(w) {
   };
 }
 
-// Helper genérico usado por avaria e risco de queda/tombamento (goteira usa
+// Helper genérico usado por avaria e risco de tombamento (goteira usa
 // stepGoteira, acima, por precisar de marcação no mapa em vez de rua/baia):
 // pergunta Sim/Não, se Sim pergunta quantas foram encontradas e gera um
 // mini-formulário para cada uma (foto obrigatória em todas).
@@ -1699,6 +1698,11 @@ async function renderMinhasPendencias() {
   load();
 }
 
+// "Risco de tombamento (Alto)" quando a pendência tem criticidade.
+function tituloTipoPendencia(p) {
+  return (p.TIPO || '') + (p.CRITICIDADE ? ' (' + p.CRITICIDADE + ')' : '');
+}
+
 function renderPendenciasList(wrap, pend, onOpen) {
   wrap.innerHTML = '';
   if (!pend.length) { wrap.appendChild(el('<div class="empty"><span class="ic">📭</span>Nenhuma pendência encontrada.</div>')); return; }
@@ -1707,8 +1711,8 @@ function renderPendenciasList(wrap, pend, onOpen) {
     const item = el(
       '<button type="button" class="list-item" style="width:100%">' +
         '<span><span class="shiplabel">' + escapeHtml(p.ID_PENDENCIA) + '</span>' +
-        '<div class="list-item__title" style="margin-top:6px">' + escapeHtml(p.TIPO) + ' — ' + escapeHtml(p.ARMAZEM) + '</div>' +
-        '<div class="list-item__sub">' + escapeHtml(p.DATA_ABERTURA) + '</div></span>' +
+        '<div class="list-item__title" style="margin-top:6px">' + escapeHtml(tituloTipoPendencia(p)) + ' — ' + escapeHtml(p.ARMAZEM) + '</div>' +
+        '<div class="list-item__sub">' + escapeHtml(p.DATA_ABERTURA) + (p.ENDERECO ? ' · 📍 ' + escapeHtml(p.ENDERECO) : '') + '</div></span>' +
         '<span class="tag tag--' + st.cls + '">' + st.label + '</span>' +
       '</button>'
     );
@@ -1721,7 +1725,7 @@ function renderPendenciaDetalhe() {
   const p = S.pendenciaAtual;
   const st = OCORRENCIA_STATUS_LABEL[p.STATUS] || { label: p.STATUS, cls: 'aberta' };
   appendHtml(app,
-    screenHeader('Pendência ' + p.ID_PENDENCIA, p.TIPO) +
+    screenHeader('Pendência ' + p.ID_PENDENCIA, tituloTipoPendencia(p)) +
     '<button class="btn btn--outline btn--sm" id="btnVoltar" style="align-self:flex-start;margin-top:-8px">← Voltar</button>'
   );
   document.getElementById('btnVoltar').onclick = function () { go(S.usuario.TIPO === 'ADMIN' ? (S.origemPendencia || 'dashPendencias') : 'minhasPendencias'); };
@@ -1730,6 +1734,35 @@ function renderPendenciaDetalhe() {
   app.appendChild(card);
   card.appendChild(el('<div class="row between"><span class="subtle">Status</span><span class="tag tag--' + st.cls + '">' + st.label + '</span></div>'));
   card.appendChild(el('<div class="row between"><span class="subtle">Armazém</span><strong>' + escapeHtml(p.ARMAZEM) + '</strong></div>'));
+  if (p.ENDERECO) card.appendChild(el('<div class="row between"><span class="subtle">Endereço</span><strong>' + escapeHtml(p.ENDERECO) + '</strong></div>'));
+  if (p.TIPO === TIPO_RISCO_TOMBAMENTO && S.usuario.TIPO === 'ADMIN') {
+    // Admin escolhe/altera a criticidade aqui — é assim que as pendências de
+    // risco antigas (registradas sem criticidade) são classificadas.
+    const critBox = el('<div class="stack" style="gap:6px"><div class="row between"><span class="subtle">Criticidade</span>' +
+      (p.CRITICIDADE ? '' : '<strong style="color:#DF8630">Não definida</strong>') + '</div></div>');
+    card.appendChild(critBox);
+    const linha = el('<div class="row" style="gap:6px"></div>');
+    critBox.appendChild(linha);
+    PENDENCIA_CRITICIDADES.forEach(function (c) {
+      const ativo = p.CRITICIDADE === c;
+      const b = el('<button type="button" class="btn btn--sm ' + (ativo ? 'btn--primary' : 'btn--outline') + '" style="flex:1">' + escapeHtml(c) + '</button>');
+      b.onclick = async function () {
+        if (ativo) return;
+        linha.querySelectorAll('button').forEach(function (x) { x.disabled = true; });
+        try {
+          await api('definirCriticidadePendencia', { idPendencia: p.ID_PENDENCIA, criticidade: c });
+          p.CRITICIDADE = c;
+          invalidarCachePendencias();
+          toast('Criticidade definida: ' + c, false, true);
+          render();
+        } catch (e) { linha.querySelectorAll('button').forEach(function (x) { x.disabled = false; }); }
+      };
+      linha.appendChild(b);
+    });
+  } else if (p.CRITICIDADE) {
+    const corCrit = { Alto: '#D64545', 'Médio': '#DF8630', Baixo: '#2F9E64' }[p.CRITICIDADE] || 'inherit';
+    card.appendChild(el('<div class="row between"><span class="subtle">Criticidade</span><strong style="color:' + corCrit + '">' + escapeHtml(p.CRITICIDADE) + '</strong></div>'));
+  }
   card.appendChild(el('<div class="row between"><span class="subtle">Data de abertura</span><strong>' + escapeHtml(p.DATA_ABERTURA) + '</strong></div>'));
   card.appendChild(el('<div class="divider"></div>'));
   card.appendChild(el('<p><strong>Descrição</strong><br>' + escapeHtml(p.DESCRICAO || '—') + '</p>'));
@@ -2163,7 +2196,6 @@ function renderAdminHome() {
     '<div class="stack">' +
       menuCard('📊', 'Dashboard', 'Painel do dia, resumo geral, pendências, carunchos, ocorrências, manutenções, mapas e limpeza', 'dashboard') +
       menuCard('📄', 'Relatórios', 'Baixar relatórios em CSV (Excel/Sheets)', 'relatorios') +
-      menuCard('🖨️', 'Apresentação mensal', 'Slides de segurança do mês para imprimir ou salvar em PDF', 'relatorioMensal') +
       menuCard('✅', 'Validação de inspeções', 'Revisar inspeções dos conferentes', 'validacaoInspecoes') +
       menuCard('🗂️', 'Aprovação de pendências', 'Soluções enviadas pelos conferentes, aguardando validação', 'aprovacaoPendencias') +
       menuCard('➕', 'Registrar pendência', 'Abrir uma pendência manualmente', 'registrarPendencia') +
@@ -2184,7 +2216,7 @@ const DASHBOARDS = [
   { icone: '📊', titulo: 'Resumo geral', sub: 'Rondas, checklists, capturas e ocorrências — igual ao relatório semanal', screen: 'resumoGeral' },
   { icone: '📋', titulo: 'Dashboard de pendências', sub: 'Status, distribuição e evolução — visão geral, sem ações', screen: 'dashPendencias' },
   { icone: '🐞', titulo: 'Dashboard de carunchos', sub: 'Capturas por armazém e armadilha', screen: 'dashCarunchos' },
-  { icone: '⚠️', titulo: 'Ocorrências da inspeção', sub: 'Avaria, goteira e risco de queda/tombamento por armazém', screen: 'dashOcorrencias' },
+  { icone: '⚠️', titulo: 'Ocorrências da inspeção', sub: 'Avaria, goteira e risco de tombamento por armazém', screen: 'dashOcorrencias' },
   { icone: '🔧', titulo: 'Manutenções', sub: 'Itens pendentes e concluídos, por armazém', screen: 'manutencoes' },
   { icone: '🗺️', titulo: 'Mapa de capturas', sub: 'Visualização espacial das armadilhas', screen: 'mapaCapturas' },
   { icone: '📷', titulo: 'Fotos de capturas', sub: 'Fotos das armadilhas por data, com quantidade e armazém', screen: 'fotosCapturas' },
@@ -2383,6 +2415,10 @@ async function renderInspecaoDetalheAdmin() {
 
 // ------------------------- ADMIN: REGISTRAR PENDÊNCIA -------------------------
 
+const TIPO_RISCO_TOMBAMENTO = 'Risco de tombamento';
+const PENDENCIA_TIPOS = ['Produto avariado', 'Goteira', TIPO_RISCO_TOMBAMENTO, 'Falha na limpeza', 'Lona', 'Pallet quebrado', 'Desorganização', "Poça d'água"];
+const PENDENCIA_CRITICIDADES = ['Baixo', 'Médio', 'Alto'];
+
 async function renderRegistrarPendencia() {
   const origem = S.pendenciaOrigemInspecao;
   app.appendChild(el(screenHeader('Registrar pendência', origem ? 'A partir da inspeção ' + origem.ID_INSPECAO : 'Registro manual')));
@@ -2390,20 +2426,32 @@ async function renderRegistrarPendencia() {
   app.appendChild(card);
 
   const armazens = await getArmazensCached().catch(function () { return []; });
-  const ocorrTipos = await api('getOcorrenciasTipos', {}).catch(function () { return []; });
 
   const armazemSel = selectField(card, { label: 'Armazém', options: armazens.map(function (a) { return { value: a.ARMAZEM, label: a.ARMAZEM }; }) });
   if (origem) armazemSel.select.value = origem.ARMAZEM;
 
-  const tipoSel = selectField(card, { label: 'Ocorrência encontrada', options: ocorrTipos.map(function (o) { return { value: o.TIPO, label: o.TIPO }; }) });
-  const outroWrap = el('<div style="display:none"></div>');
-  card.appendChild(outroWrap);
-  let outroField = null;
+  // Endereço dentro do armazém (rua, baia, posição…) — opcional.
+  const enderecoField = textField(card, { label: 'Endereço (opcional)', placeholder: 'Digite o endereço — ex: Rua 3, baia 12' });
+
+  // Lista fixa de ocorrências (Decisão 19). Não vem mais da aba
+  // CONFIG_OCORRENCIAS: é sempre esta lista, nesta ordem.
+  const tipoSel = selectField(card, { label: 'Ocorrência encontrada', options: PENDENCIA_TIPOS.map(function (t) { return { value: t, label: t }; }) });
+
+  // Risco de tombamento pede o nível de criticidade (obrigatório nesse caso).
+  const critWrap = el('<div style="display:none"></div>');
+  card.appendChild(critWrap);
+  const critSel = selectField(critWrap, { label: 'Criticidade do risco *', options: PENDENCIA_CRITICIDADES.map(function (c) { return { value: c, label: c }; }) });
   tipoSel.select.onchange = function () {
-    outroWrap.style.display = tipoSel.getValue() === 'Outro' ? 'block' : 'none';
-    outroWrap.innerHTML = '';
-    if (tipoSel.getValue() === 'Outro') outroField = textField(outroWrap, { label: 'Descreva a ocorrência' });
+    const ehRisco = tipoSel.getValue() === TIPO_RISCO_TOMBAMENTO;
+    critWrap.style.display = ehRisco ? 'block' : 'none';
+    if (!ehRisco) critSel.select.value = '';
   };
+  function criticidadeValida() {
+    if (tipoSel.getValue() !== TIPO_RISCO_TOMBAMENTO) return true;
+    if (!critSel.getValue()) { toast('Escolha a criticidade do risco (baixo, médio ou alto)', true); return false; }
+    return true;
+  }
+  function criticidade() { return tipoSel.getValue() === TIPO_RISCO_TOMBAMENTO ? critSel.getValue() : ''; }
 
   // Registro a partir de uma inspeção (vindo do detalhe de uma inspeção) já
   // está amarrado àquela inspeção específica — continua sendo sempre 1
@@ -2419,18 +2467,16 @@ async function renderRegistrarPendencia() {
     btn.onclick = async function () {
       if (!armazemSel.getValue()) { toast('Selecione o armazém', true); return; }
       if (!tipoSel.getValue()) { toast('Selecione a ocorrência', true); return; }
+      if (!criticidadeValida()) return;
       btn.disabled = true; btn.textContent = 'Registrando…';
       try {
         const data = await api('createPendencia', {
           unidade: S.unidade.UNIDADE, armazem: armazemSel.getValue(),
           idInspecao: origem.ID_INSPECAO, conferente: origem.USUARIO,
           admin: S.usuario.NOME, origem: 'INSPECAO',
-          tipo: tipoSel.getValue() === 'Outro' && outroField ? outroField.getValue() : tipoSel.getValue(),
+          tipo: tipoSel.getValue(), endereco: enderecoField.getValue(), criticidade: criticidade(),
           descricao: descField.getValue(), fotos: foto.getValue()
         });
-        if (tipoSel.getValue() === 'Outro' && outroField && outroField.getValue()) {
-          api('adicionarOcorrenciaTipo', { tipo: outroField.getValue() }).catch(function () {});
-        }
         toast('Pendência ' + data.idPendencia + ' registrada para ' + (data.responsavel || 'responsável não definido') + '.', false, true);
         S.pendenciaOrigemInspecao = null;
         go('dashPendencias');
@@ -2480,19 +2526,17 @@ async function renderRegistrarPendencia() {
     if (!armazemSel.getValue()) { toast('Selecione o armazém', true); return; }
     if (!tipoSel.getValue()) { toast('Selecione a ocorrência', true); return; }
     if (!entries.length) { toast('Gere pelo menos um formulário', true); return; }
-    const tipoFinal = tipoSel.getValue() === 'Outro' && outroField ? outroField.getValue() : tipoSel.getValue();
-    if (tipoSel.getValue() === 'Outro' && !tipoFinal) { toast('Descreva a ocorrência', true); return; }
+    if (!criticidadeValida()) return;
+    const tipoFinal = tipoSel.getValue();
 
     btn.disabled = true; btn.textContent = entries.length > 1 ? 'Registrando ' + entries.length + '…' : 'Registrando…';
     try {
       const data = await api('createPendenciasLote', {
         unidade: S.unidade.UNIDADE, armazem: armazemSel.getValue(),
         admin: S.usuario.NOME, origem: 'MANUAL', tipo: tipoFinal,
+        endereco: enderecoField.getValue(), criticidade: criticidade(),
         registros: entries.map(function (e) { return { descricao: e.desc.getValue(), fotos: e.foto.getValue() }; })
       });
-      if (tipoSel.getValue() === 'Outro' && outroField && outroField.getValue()) {
-        api('adicionarOcorrenciaTipo', { tipo: outroField.getValue() }).catch(function () {});
-      }
       toast(data.quantidade + (data.quantidade === 1 ? ' pendência registrada' : ' pendências registradas') + ' para ' + (data.responsavel || 'responsável não definido') + '.', false, true);
       go('dashPendencias');
     } catch (e) {
@@ -2919,7 +2963,7 @@ async function renderResumoGeral() {
         kpi(d.totalChecklists, 'Checklists realizados') +
         kpi(d.avarias, 'Avarias') +
         kpi(d.goteiras, 'Goteiras') +
-        kpi(d.riscoQuedaTombamento, 'Risco queda/tombamento') +
+        kpi(d.riscoQuedaTombamento, 'Risco de tombamento') +
         kpi(d.sujidades, 'Sujidades (checklist)') +
         kpi(d.capturasTotal, 'Carunchos capturados') +
         kpi(d.diasSemCaptura, 'Dias c/ ronda sem captura') +
@@ -3142,7 +3186,7 @@ async function renderDashOcorrencias() {
 
   // Filtro de tipo (critério): os 3 tipos fixos da inspeção sempre aparecem;
   // qualquer outro tipo que exista nos registros entra na lista também.
-  const TIPOS_FIXOS = ['Produto avariado', 'Goteira', 'Risco de queda/tombamento'];
+  const TIPOS_FIXOS = ['Produto avariado', 'Goteira', 'Risco de tombamento'];
   function atualizarOpcoesTipo(registros) {
     const atual = selTipo.value;
     const tipos = TIPOS_FIXOS.slice();
@@ -3214,7 +3258,7 @@ async function renderDashOcorrencias() {
           kpi(d.total, 'Total de ocorrências') +
           kpi(d.produtoAvariado.total, 'Produto avariado') +
           kpi(d.goteira.total, 'Goteiras') +
-          kpi(d.riscoQuedaTombamento.total, 'Risco queda/tombamento') +
+          kpi(d.riscoQuedaTombamento.total, 'Risco de tombamento') +
         '</div>'
       ));
     } else {
@@ -3249,7 +3293,7 @@ async function renderDashOcorrencias() {
       body.appendChild(barCard('Ocorrências por armazém (todos os tipos)', d.porArmazem));
       body.appendChild(barCard('Produto avariado por armazém', d.produtoAvariado.porArmazem));
       body.appendChild(barCard('Goteiras por armazém', d.goteira.porArmazem));
-      body.appendChild(barCard('Risco de queda/tombamento por armazém', d.riscoQuedaTombamento.porArmazem));
+      body.appendChild(barCard('Risco de tombamento por armazém', d.riscoQuedaTombamento.porArmazem));
       body.appendChild(evolucaoCard('Evolução das ocorrências por data', regs));
     } else {
       body.appendChild(barCard(tipo + ' por armazém', contarPor(regs, 'ARMAZEM')));
@@ -4725,6 +4769,19 @@ async function renderDashPendencias() {
     const tituloLista = listCard.querySelector('#listaPendTitulo');
     const btnLimpar = listCard.querySelector('#btnLimparFiltroStatus');
 
+    // Riscos de tombamento sem criticidade (as antigas): lista pra o admin
+    // abrir e marcar Baixo/Médio/Alto.
+    const semCrit = d.registros.filter(function (r) { return r.TIPO === TIPO_RISCO_TOMBAMENTO && !r.CRITICIDADE; });
+    if (semCrit.length && S.usuario.TIPO === 'ADMIN') {
+      const avisoCard = el('<div class="card stack" style="border-left:4px solid #DF8630"><h3 class="title-lg">⚠️ ' + semCrit.length +
+        (semCrit.length === 1 ? ' risco de tombamento sem criticidade' : ' riscos de tombamento sem criticidade') +
+        '</h3><p class="subtle" style="margin:0">Abra cada uma e marque Baixo, Médio ou Alto.</p></div>');
+      body.insertBefore(avisoCard, listCard);
+      const avisoLista = el('<div class="stack"></div>');
+      avisoCard.appendChild(avisoLista);
+      renderPendenciasList(avisoLista, semCrit, function (p) { go('pendenciaDetalhe', { pendenciaAtual: p, origemPendencia: 'dashPendencias' }); });
+    }
+
     if (d.score) {
       const cardGeral = scoreGeralCard(d.score);
       if (cardGeral) body.appendChild(cardGeral);
@@ -4862,498 +4919,4 @@ function scorePorArmazemCard(score) {
   // o valor mostrado no topo de cada barra é o score (%), não a contagem crua
   card.querySelectorAll('.chart-col__val').forEach(function (v, i) { v.textContent = entries[i][1] + '%'; });
   return card;
-}
-
-// ======================= RELATÓRIO MENSAL EM SLIDES =======================
-// [NOV/2026] Apresentação mensal para a reunião de gestores: slides 16:9 no
-// visual ICC, montados no próprio navegador com os dados que o app já busca.
-// Botão "Imprimir / salvar PDF" usa a impressão do navegador (uma página por
-// slide). Nada disso depende do Apps Script além das leituras de sempre.
-const RM = {
-  W: 1280, H: 720,
-  VERDE: '#436722', VERDE2: '#5E9030', VCLARO: '#B9D697', TINT: '#EEF4E7',
-  LARANJA: '#DF8630', LARANJA_C: '#FDF1E4', VERM: '#C0392B', VERM_C: '#FBE9E7',
-  TXT: '#1F2937', CINZA: '#5B6472', CINZA_C: '#E3E7EC',
-  LOGO: 'logo.png'
-};
-const RM_MESES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
-
-function rmEsc(v) { return escapeHtml(v === null || v === undefined ? '' : String(v)); }
-function rmNum(v, casas) {
-  const n = Number(v) || 0;
-  const f = Math.pow(10, casas || 0);
-  return String(Math.round(n * f) / f).replace('.', ',');
-}
-// Data em qualquer formato que as planilhas devolvem: ISO, dd/mm/aaaa
-// (com ou sem hora) ou objeto Date.
-function rmData(v) {
-  if (v === null || v === undefined || v === '') return null;
-  if (v instanceof Date) return isNaN(v) ? null : v;
-  const s = String(v).trim();
-  const br = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T,]+(\d{1,2}):(\d{2}))?/);
-  if (br) return new Date(+br[3], +br[2] - 1, +br[1], +(br[4] || 0), +(br[5] || 0));
-  const d = new Date(s);
-  return isNaN(d) ? null : d;
-}
-function rmNoMes(v, mes) {
-  const d = rmData(v);
-  return !!d && d >= mes.inicio && d < mes.fim;
-}
-function rmMesSelecionado(valor) { // valor = 'AAAA-MM'
-  const p = String(valor || '').split('-');
-  const ano = +p[0], m = +p[1] - 1;
-  const inicio = new Date(ano, m, 1), fim = new Date(ano, m + 1, 1);
-  const ultimo = new Date(ano, m + 1, 0);
-  const iso = function (d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
-  const br = function (d) { return String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + d.getFullYear(); };
-  return {
-    inicio: inicio, fim: fim, nome: RM_MESES[m], ano: ano,
-    rotulo: RM_MESES[m] + ' ' + ano, isoIni: iso(inicio), isoFim: iso(ultimo), brIni: br(inicio), brFim: br(ultimo)
-  };
-}
-function rmMesPassado() {
-  const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1);
-  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
-}
-function rmMediana(lista) {
-  const v = lista.filter(function (x) { return x !== null && !isNaN(x); }).sort(function (a, b) { return a - b; });
-  if (!v.length) return null;
-  const m = Math.floor(v.length / 2);
-  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
-}
-function rmContar(lista, fn) {
-  const c = {};
-  lista.forEach(function (x) { const k = fn(x); if (k) c[k] = (c[k] || 0) + 1; });
-  return c;
-}
-function rmOrdenar(obj) {
-  return Object.keys(obj).map(function (k) { return [k, obj[k]]; }).sort(function (a, b) { return b[1] - a[1]; });
-}
-function rmSemAcento(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase(); }
-
-// ---------- peças dos slides ----------
-function rmSlide(titulo, etiqueta, corpo) {
-  return '<section class="rm-slide">' +
-    '<div class="rm-marca"><i></i><i></i></div>' +
-    '<h2 class="rm-titulo">' + rmEsc(titulo) + '</h2>' +
-    (etiqueta ? '<span class="rm-etiqueta">' + rmEsc(etiqueta) + '</span>' : '') +
-    '<div class="rm-corpo">' + corpo + '</div>' +
-    '<div class="rm-rodape"></div><img class="rm-logo" src="' + RM.LOGO + '" alt="ICC">' +
-  '</section>';
-}
-function rmCapa(titulo, mes, sub, secao, icone) {
-  return '<section class="rm-slide rm-capa">' +
-    '<img class="rm-capa-logo" src="' + RM.LOGO + '" alt="ICC">' +
-    '<div class="rm-capa-txt"><span class="rm-capa-secao">' + rmEsc(secao) + '</span>' +
-    '<h1>' + rmEsc(titulo) + '</h1><h1 class="rm-capa-mes">' + rmEsc(mes.nome) + ' <small>' + mes.ano + '</small></h1>' +
-    '<p>' + rmEsc(sub) + '</p></div>' +
-    '<div class="rm-capa-hex"><span>' + (icone || '') + '</span></div>' +
-    '<div class="rm-rodape"></div>' +
-  '</section>';
-}
-function rmEncerramento() {
-  return '<section class="rm-slide rm-fim"><img src="' + RM.LOGO + '" alt="ICC"><div class="rm-rodape"></div></section>';
-}
-function rmFaixa(texto) { return '<div class="rm-faixa">' + rmEsc(texto) + '</div>'; }
-function rmKpi(numero, rotulo, cor) {
-  return '<div class="rm-tile"><div class="rm-kpi-num" style="color:' + (cor || RM.VERDE) + '">' + rmEsc(numero) + '</div>' +
-    '<div class="rm-kpi-rot">' + rmEsc(rotulo) + '</div></div>';
-}
-function rmRosca(partes, centro, tam) {
-  // partes = [[valor, cor], ...]
-  const total = partes.reduce(function (s, p) { return s + (Number(p[0]) || 0); }, 0) || 1;
-  let acc = 0;
-  const fatias = partes.map(function (p) {
-    const ini = acc / total * 360; acc += Number(p[0]) || 0;
-    return p[1] + ' ' + ini + 'deg ' + (acc / total * 360) + 'deg';
-  });
-  if (!partes.some(function (p) { return Number(p[0]) > 0; })) fatias.splice(0, fatias.length, RM.CINZA_C + ' 0deg 360deg');
-  tam = tam || 190;
-  return '<div class="rm-rosca" style="width:' + tam + 'px;height:' + tam + 'px;background:conic-gradient(' + fatias.join(',') + ')">' +
-    '<div class="rm-rosca-furo" style="font-size:' + Math.round(tam / 6.5) + 'px">' + rmEsc(centro) + '</div></div>';
-}
-function rmKpiRosca(partes, centro, rotulo) {
-  return '<div class="rm-tile">' + rmRosca(partes, centro, 180) + '<div class="rm-kpi-rot">' + rmEsc(rotulo) + '</div></div>';
-}
-// Barras horizontais: itens = [[rótulo, valor]], destaque = lista de rótulos em laranja.
-function rmBarras(titulo, itens, opt) {
-  opt = opt || {};
-  const max = Math.max.apply(null, itens.map(function (i) { return i[1]; }).concat([0])) || 1;
-  const fmt = opt.fmt || function (v) { return rmNum(v); };
-  let h = '<div class="rm-graf">' + (titulo ? '<div class="rm-graf-tit">' + rmEsc(titulo) + '</div>' : '');
-  if (!itens.length) h += '<p class="rm-vazio">' + rmEsc(opt.vazio || 'Nada registrado no mês.') + '</p>';
-  itens.forEach(function (i) {
-    const cor = (opt.destaque || []).indexOf(i[0]) > -1 ? RM.LARANJA : (opt.cor || RM.VERDE2);
-    h += '<div class="rm-barra"><span class="rm-barra-rot">' + rmEsc(i[0]) + '</span>' +
-      '<span class="rm-barra-trilho"><span style="width:' + Math.max(1.5, i[1] / max * 100) + '%;background:' + cor + '"></span></span>' +
-      '<span class="rm-barra-val">' + rmEsc(fmt(i[1])) + '</span></div>';
-  });
-  return h + '</div>';
-}
-// Barras empilhadas: itens = [[rótulo, [v1, v2]]], series = [[nome, cor, corTexto]]
-function rmEmpilhadas(itens, series) {
-  const max = Math.max.apply(null, itens.map(function (i) { return i[1].reduce(function (a, b) { return a + b; }, 0); }).concat([0])) || 1;
-  let h = '<div class="rm-graf"><div class="rm-legenda">' + series.map(function (s) {
-    return '<span><i style="background:' + s[1] + '"></i>' + rmEsc(s[0]) + '</span>';
-  }).join('') + '</div>';
-  itens.forEach(function (i) {
-    h += '<div class="rm-barra rm-barra--alta"><span class="rm-barra-rot">' + rmEsc(i[0]) + '</span><span class="rm-barra-trilho rm-barra-trilho--empilhada">';
-    i[1].forEach(function (v, k) {
-      if (v > 0) h += '<span style="width:' + (v / max * 100) + '%;background:' + series[k][1] + ';color:' + series[k][2] + '">' + v + '</span>';
-    });
-    h += '</span></div>';
-  });
-  return h + '</div>';
-}
-// Cartões com ícone: itens = [[ícone, título, descrição]]
-function rmCartoes(itens, tipo, colunas, compacto) {
-  if (!itens.length) return '<p class="rm-vazio">Nada para mostrar neste mês.</p>';
-  return '<div class="rm-cartoes rm-cartoes--' + (tipo || 'ok') + (compacto ? ' rm-cartoes--compacto' : '') + '" style="grid-template-columns:repeat(' + (colunas || 3) + ',1fr)">' +
-    itens.map(function (c) {
-      return '<div class="rm-cartao"><span class="rm-bola">' + c[0] + '</span><div><strong>' + rmEsc(c[1]) + '</strong><small>' + rmEsc(c[2]) + '</small></div></div>';
-    }).join('') + '</div>';
-}
-function rmDestaque(partes) { // [[número, texto], ...] em linha
-  return '<div class="rm-destaque">' + partes.map(function (p) {
-    return '<span><b>' + rmEsc(p[0]) + '</b> ' + rmEsc(p[1]) + '</span>';
-  }).join('<em>·</em>') + '</div>';
-}
-
-// ---------- tela: escolher mês, ver os slides e imprimir ----------
-// montar(mes) devolve uma Promise com a lista de slides (HTML).
-function rmTela(opcoes) {
-  appendHtml(app, screenHeader(opcoes.eyebrow || 'Relatório mensal', opcoes.titulo, opcoes.subtitulo));
-  if (opcoes.voltar) {
-    const voltar = el('<button class="btn btn--outline btn--sm" style="align-self:flex-start;margin-top:-6px">← Voltar</button>');
-    voltar.onclick = function () { go(opcoes.voltar); };
-    app.appendChild(voltar);
-  }
-  const topo = el(
-    '<div class="card stack rm-controles">' +
-      '<div class="field"><label>Mês da apresentação</label><input type="month" data-role="mes"></div>' +
-      '<div class="row" style="gap:8px;flex-wrap:wrap">' +
-        '<button class="btn btn--primary" data-role="gerar">Montar slides</button>' +
-        '<button class="btn btn--accent" data-role="imprimir" disabled>🖨️ Imprimir / salvar PDF</button>' +
-      '</div>' +
-      '<p class="subtle" style="margin:0;font-size:12.5px">Na janela de impressão, escolha "Salvar como PDF" e deixe as margens em "Nenhuma". Cada slide sai numa página.</p>' +
-    '</div>');
-  app.appendChild(topo);
-  const inpMes = topo.querySelector('[data-role="mes"]');
-  inpMes.value = S.rmMes || rmMesPassado();
-  inpMes.max = new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0');
-  const btnGerar = topo.querySelector('[data-role="gerar"]');
-  const btnImp = topo.querySelector('[data-role="imprimir"]');
-  const area = el('<div class="rm-previa"></div>');
-  app.appendChild(area);
-
-  function escalar() {
-    const w = area.clientWidth || 360;
-    const k = Math.min(1, w / RM.W);
-    area.querySelectorAll('.rm-moldura').forEach(function (m) {
-      m.style.height = (RM.H * k) + 'px';
-      m.firstElementChild.style.transform = 'scale(' + k + ')';
-    });
-  }
-  window.addEventListener('resize', escalar);
-
-  let geracao = 0;
-  async function gerar() {
-    const minha = ++geracao;
-    S.rmMes = inpMes.value;
-    const mes = rmMesSelecionado(inpMes.value);
-    btnGerar.disabled = true; btnImp.disabled = true;
-    area.innerHTML = '<p class="subtle">Buscando os dados de ' + rmEsc(mes.rotulo) + '…</p>';
-    let slides = null;
-    try { slides = await opcoes.montar(mes); } catch (e) { console.error(e); slides = null; }
-    if (minha !== geracao) return;
-    btnGerar.disabled = false;
-    if (!slides) { area.innerHTML = typeof blocoFalhaCarregar === 'function' ? blocoFalhaCarregar() : '<p class="subtle">Não foi possível carregar agora. Tente de novo.</p>'; return; }
-    area.innerHTML = '';
-    slides.forEach(function (html) {
-      const m = el('<div class="rm-moldura"></div>');
-      m.innerHTML = html;
-      area.appendChild(m);
-    });
-    escalar();
-    btnImp.disabled = false;
-    btnImp.onclick = function () { rmImprimir(slides, opcoes.nomeArquivo + ' ' + mes.rotulo); };
-  }
-  btnGerar.onclick = gerar;
-  inpMes.onchange = gerar;
-  gerar();
-}
-
-function rmImprimir(slides, nome) {
-  const antigo = document.getElementById('rm-impressao');
-  if (antigo) antigo.remove();
-  const raiz = document.createElement('div');
-  raiz.id = 'rm-impressao';
-  raiz.innerHTML = slides.join('');
-  document.body.appendChild(raiz);
-  document.body.classList.add('rm-imprimindo');
-  const tituloAntigo = document.title;
-  document.title = nome; // vira o nome sugerido do PDF
-  const limpar = function () {
-    document.body.classList.remove('rm-imprimindo');
-    document.title = tituloAntigo;
-    raiz.remove();
-    window.removeEventListener('afterprint', limpar);
-  };
-  window.addEventListener('afterprint', limpar);
-  // Espera as imagens (logo) carregarem antes de abrir a impressão.
-  const imgs = Array.prototype.slice.call(raiz.querySelectorAll('img'));
-  Promise.all(imgs.map(function (i) { return i.complete ? 0 : new Promise(function (r) { i.onload = i.onerror = r; }); }))
-    .then(function () { setTimeout(function () { window.print(); }, 50); });
-}
-
-// ------------------------- RELATÓRIO MENSAL — ARMAZÉM -------------------------
-// O que entra como "segurança": risco de queda/tombamento, goteira (piso
-// molhado), palete quebrado ou fora do lugar, estrutura e piso, iluminação,
-// portas, combate a incêndio, linha de vida, elétrica e caminho seguro.
-// Sujidade, limpeza, produto avariado e balança ficam de fora.
-function rmCategoriaSeguranca(texto) {
-  const s = rmSemAcento(texto);
-  if (!s.trim()) return null;
-  const regras = [
-    [/ilumina|lampada|sem luz|escuro/, 'Iluminação'],
-    [/extintor|hidrante|incendio/, 'Combate a incêndio'],
-    [/linha de vida/, 'Linha de vida'],
-    [/tomb|risco de queda/, 'Risco de queda / tombamento'],
-    [/palete|pallet|estrado|grade|bags? fora/, 'Palete quebrado / fora do lugar'],
-    [/pilar|estrutura|parede|piso|trinca|rachad|fissura|buraco|chao|telha|cedendo|sedendo/, 'Estrutura e piso'],
-    [/porta|portao/, 'Porta que não fecha'],
-    [/fiacao|fios? solt|eletric|tomada|quadro de forca/, 'Elétrica'],
-    [/caminho seguro/, 'Caminho seguro']
-  ];
-  for (let i = 0; i < regras.length; i++) if (regras[i][0].test(s)) return regras[i][1];
-  return null;
-}
-const RM_ICONE_ARM = {
-  'Iluminação': '💡', 'Combate a incêndio': '🔥', 'Linha de vida': '🦺', 'Risco de queda / tombamento': '📦',
-  'Palete quebrado / fora do lugar': '🪵', 'Estrutura e piso': '🏗️', 'Porta que não fecha': '🚪', 'Elétrica': '⚡',
-  'Caminho seguro': '🚧', 'Goteira (piso molhado)': '💧'
-};
-const RM_ITENS_SEMANAIS = ['Extintores', 'Painel elétrico', 'Carregadores', 'Estrutura de ferro', 'Caminhos seguros'];
-function rmGrupoPendencia(p) {
-  const t = rmSemAcento(p.TIPO), d = rmSemAcento(p.DESCRICAO);
-  if (/tomb|queda/.test(t)) return 'Risco de tombamento';
-  if (/palete quebrado/.test(t) || /quebrad/.test(d)) return 'Palete quebrado';
-  if (/desorganiza|lona fora|fora do local|palete fora/.test(t)) return 'Material fora do lugar';
-  if (/caminho seguro/.test(d) || /caminho seguro/.test(t)) return 'Caminho seguro obstruído';
-  if (/estrutura|ilumina|porta|extintor|eletric/.test(t)) return rmCategoriaSeguranca(t);
-  return null;
-}
-function rmArmazemDaBaia(texto, armazemPadrao) {
-  const m = String(texto || '').toUpperCase().match(/M\s?0?(\d)\s?[A-Z]/);
-  return m ? 'Armazém 0' + m[1] : String(armazemPadrao || '').trim();
-}
-function rmBaia(texto) {
-  const m = String(texto || '').toUpperCase().match(/M\s?0?(\d)\s?([A-Z])\s?(\d{1,2})/);
-  return m ? 'M0' + m[1] + m[2] + String(+m[3]).padStart(2, '0') : null;
-}
-function temTexto(v) { return v !== null && v !== undefined && String(v).trim() !== '' && String(v) !== 'null'; }
-function rmCurtoArm(a) { return String(a || '').trim().replace(/^Armaz[ée]m\s*/i, 'Arm. ').replace(/^ALMOX$/i, 'Almox'); }
-function rmDataBR(v) { const d = rmData(v); return d ? String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0') : ''; }
-
-async function renderRelatorioMensal() {
-  rmTela({
-    titulo: 'Apresentação de segurança',
-    subtitulo: 'Slides do mês para a reunião de gestores · ' + S.unidade.UNIDADE,
-    voltar: 'adminHome',
-    nomeArquivo: 'Segurança Armazém ' + S.unidade.UNIDADE,
-    montar: rmMontarArmazem
-  });
-}
-
-RM.LOGO = 'logo-relatorio.png';
-const RM_PRIORIDADE_ARM = ['Combate a incêndio', 'Linha de vida', 'Estrutura e piso', 'Porta que não fecha', 'Iluminação', 'Elétrica', 'Caminho seguro', 'Palete quebrado / fora do lugar'];
-function rmPrioridade(cat) { const i = RM_PRIORIDADE_ARM.indexOf(cat); return i === -1 ? 99 : i; }
-
-async function rmMontarArmazem(mes) {
-  const base = { unidade: S.unidade.UNIDADE, armazem: '', dataInicial: mes.brIni, dataFinal: mes.brFim };
-  const r = await Promise.all([
-    api('getResumoGeral', base).catch(function () { return null; }),
-    api('getDashboardOcorrencias', base),
-    api('getDashboardPendencias', base),
-    api('getDashboardChecklist', base),
-    api('getManutencoes', { unidade: S.unidade.UNIDADE, armazem: '', status: '' }).catch(function () { return []; }),
-    api('getInspecoes', { unidade: S.unidade.UNIDADE, armazem: '', status: '' }).catch(function () { return []; })
-  ]);
-  const resumo = r[0] || {};
-  const ocorr = ((r[1] && r[1].registros) || []).filter(function (o) { return rmNoMes(o.DATA, mes); });
-  const pend = ((r[2] && r[2].registros) || []).filter(function (p) { return rmNoMes(p.DATA_ABERTURA, mes); });
-  const chk = ((r[3] && r[3].registros) || []).filter(function (c) { return rmNoMes(c.DATA, mes); });
-  const manut = r[4] || [];
-  const insp = (r[5] || []).filter(function (i) { return rmNoMes(i.DATA, mes); });
-  const totalInspecoes = resumo.totalInspecoes !== undefined ? resumo.totalInspecoes : insp.length;
-
-  // ---- o que os conferentes registraram ----
-  const achados = [];
-  const vistos = {};
-  const anotar = function (data, armazem, cat, texto) {
-    if (!cat) return;
-    const chave = rmDataBR(data) + '|' + String(armazem).trim() + '|' + cat;
-    if (vistos[chave]) return;
-    vistos[chave] = true;
-    achados.push({ data: data, armazem: String(armazem || '').trim(), cat: cat, texto: texto });
-  };
-  ocorr.forEach(function (o) {
-    if (/tomb|queda/i.test(o.TIPO)) anotar(o.DATA, o.ARMAZEM, 'Risco de queda / tombamento', o.DESCRICAO);
-    else if (/goteira/i.test(o.TIPO)) achados.push({ data: o.DATA, armazem: String(o.ARMAZEM || '').trim(), cat: 'Goteira (piso molhado)', texto: o.DESCRICAO });
-  });
-  chk.forEach(function (c) {
-    const res = String(c.RESULTADO || '').toUpperCase();
-    if (['NAO_CONFORME', 'NECESSITA_MANUTENCAO', 'INOPERANTE'].indexOf(res) === -1) return;
-    if (/balan|aspirador/i.test(c.ITEM)) return;
-    const obs = String(c.OBSERVACAO || '').trim();
-    const cat = obs ? rmCategoriaSeguranca(obs) : (RM_ITENS_SEMANAIS.indexOf(c.ITEM) > -1 ? rmCategoriaSeguranca(c.ITEM) : null);
-    anotar(c.DATA, c.ARMAZEM, cat, obs || c.ITEM);
-  });
-  insp.forEach(function (i) { anotar(i.DATA, i.ARMAZEM, rmCategoriaSeguranca(i.OBSERVACAO), i.OBSERVACAO); });
-  const porCatConf = rmOrdenar(rmContar(achados, function (a) { return a.cat; }));
-  const repetidos = rmOrdenar(rmContar(achados.filter(function (a) { return !/Goteira|tombamento/.test(a.cat); }), function (a) { return a.armazem + '|' + a.cat; }))
-    .filter(function (x) { return x[1] >= 2; }).slice(0, 3);
-
-  // ---- pendências dos administradores ----
-  const pendSeg = pend.map(function (p) { return Object.assign({ grupo: rmGrupoPendencia(p) }, p); }).filter(function (p) { return p.grupo; });
-  const st = function (p) { const s = String(p.STATUS); return s === 'FINALIZADA' ? 0 : s === 'AGUARDANDO_VALIDACAO' ? 1 : 2; };
-  const grupos = {};
-  pendSeg.forEach(function (p) { (grupos[p.grupo] = grupos[p.grupo] || [0, 0, 0])[st(p)]++; });
-  const gruposOrd = Object.keys(grupos).sort(function (a, b) {
-    return grupos[b].reduce(function (x, y) { return x + y; }) - grupos[a].reduce(function (x, y) { return x + y; });
-  });
-  const finalizadas = pendSeg.filter(function (p) { return st(p) === 0; }).length;
-  const emValidacao = pendSeg.filter(function (p) { return st(p) === 1; }).length;
-  const emAberto = pendSeg.length - finalizadas - emValidacao;
-  const horasResolver = rmMediana(pendSeg.map(function (p) {
-    const a = rmData(p.DATA_ABERTURA), f = rmData(p.DATA_RESOLUCAO);
-    return a && f ? (f - a) / 3600000 : null;
-  }));
-
-  // ---- risco de tombamento (conferentes + administradores) ----
-  const tombConf = ocorr.filter(function (o) { return /tomb|queda/i.test(o.TIPO); });
-  const tombAdm = pendSeg.filter(function (p) { return p.grupo === 'Risco de tombamento'; });
-  const tombTodos = tombConf.map(function (o) { return { arm: rmArmazemDaBaia(o.DESCRICAO, o.ARMAZEM), baia: rmBaia(o.DESCRICAO), txt: o.DESCRICAO }; })
-    .concat(tombAdm.map(function (p) { return { arm: rmArmazemDaBaia(p.DESCRICAO, p.ARMAZEM), baia: rmBaia(p.DESCRICAO), txt: p.DESCRICAO + ' ' + (p.DESCRICAO_SOLUCAO || '') }; }));
-  const tombPorArm = rmOrdenar(rmContar(tombTodos, function (t) { return t.arm; }));
-  const causas = rmOrdenar(rmContar(tombTodos, function (t) {
-    const s = rmSemAcento(t.txt);
-    if (/terceiro|3o de alto|3 de alto|3º/.test(s)) return 'Bag no 3º de altura';
-    if (/estrado|palete quebr|pallet quebr/.test(s)) return 'Estrado ou palete quebrado';
-    if (/fumiga/.test(s)) return 'Carga em fumigação';
-    if (/paletiz|carga|alinh|refe|emblocamento|pilha/.test(s)) return 'Carga mal montada';
-    return null;
-  }));
-  const baiasRep = rmOrdenar(rmContar(tombTodos, function (t) { return t.baia; })).filter(function (x) { return x[1] >= 2; });
-  const ruasRep = rmOrdenar(rmContar(tombTodos, function (t) { return t.baia ? t.baia.slice(0, 4) : null; })).filter(function (x) { return x[1] >= 3; });
-  const iconeCausa = { 'Bag no 3º de altura': '📦', 'Estrado ou palete quebrado': '🪵', 'Carga em fumigação': '🧪', 'Carga mal montada': '🧱' };
-
-  // ---- estrutura e checklist semanal ----
-  const statusTxt = { NAO_INICIADO: ['não iniciado', ''], EM_ANDAMENTO: ['em andamento', 'and'], AGUARDANDO_APROVACAO: ['aguardando aprovação', 'and'] };
-  const manutMes = manut.filter(function (m) { return rmNoMes(m.DATA_ABERTURA, mes); });
-  const manutAbertas = manutMes.filter(function (m) { return String(m.STATUS) !== 'FINALIZADA'; })
-    .map(function (m) { return Object.assign({ cat: rmCategoriaSeguranca(m.TIPO + ' ' + (m.DESCRICAO || '')) }, m); })
-    .sort(function (a, b) {
-      const grave = function (m) { return /pilar|cedendo|sedendo|buraco|urgente/i.test(String(m.DESCRICAO || '')); };
-      const pa = a.cat === 'Estrutura e piso' ? (grave(a) ? 1.5 : 5.5) : rmPrioridade(a.cat);
-      const pb = b.cat === 'Estrutura e piso' ? (grave(b) ? 1.5 : 5.5) : rmPrioridade(b.cat);
-      return pa - pb;
-    });
-  const manutConcluidas = manut.filter(function (m) { return rmNoMes(m.DATA_CONCLUSAO, mes); });
-  const semanal = chk.filter(function (c) { return RM_ITENS_SEMANAIS.indexOf(c.ITEM) > -1; });
-  const semanalOk = semanal.filter(function (c) { return /^OK$/i.test(String(c.RESULTADO)); }).length;
-  const semanalPct = semanal.length ? Math.round(semanalOk / semanal.length * 100) : null;
-  const semanalPorItem = RM_ITENS_SEMANAIS.map(function (it) {
-    const l = semanal.filter(function (c) { return c.ITEM === it; });
-    return [it, l.filter(function (c) { return /^OK$/i.test(String(c.RESULTADO)); }).length, l.length];
-  }).filter(function (x) { return x[2]; });
-
-  const slides = [rmCapa('SEGURANÇA', mes, S.unidade.UNIDADE, 'Gestão de Armazém', '🏭')];
-
-  // 1. Resumo
-  slides.push(rmSlide('Armazém em ' + mes.nome.toLowerCase(), 'ARMAZÉM',
-    '<div class="rm-linha">' +
-      rmKpi(totalInspecoes, 'inspeções nos armazéns e almoxarifado') +
-      rmKpiRosca([[finalizadas, RM.VERDE], [emValidacao, RM.VCLARO], [emAberto, RM.CINZA_C]], (finalizadas + emValidacao) + '/' + pendSeg.length, 'pendências de segurança tratadas') +
-      rmKpi(tombTodos.length, 'riscos de tombamento encontrados', RM.VERM) +
-      rmKpi(horasResolver === null ? '—' : (horasResolver < 48 ? rmNum(horasResolver) + ' h' : rmNum(horasResolver / 24, 1) + ' dias'), 'tempo típico para resolver', RM.LARANJA) +
-    '</div>' +
-    rmFaixa(pendSeg.length && !emAberto ? '✓  Todas as pendências de segurança tiveram solução — ' + finalizadas + ' finalizadas, ' + emValidacao + ' em validação'
-      : pendSeg.length + ' pendências de segurança · ' + finalizadas + ' finalizadas, ' + emValidacao + ' em validação, ' + emAberto + ' em aberto')));
-
-  // 2. Conferentes
-  slides.push(rmSlide('Armazém: achados dos conferentes', 'ARMAZÉM',
-    '<div class="rm-linha">' +
-      '<div style="flex:1.5">' + rmBarras(achados.length + ' registros de segurança nas inspeções e checklists', porCatConf,
-        { destaque: ['Risco de queda / tombamento', 'Estrutura e piso', 'Combate a incêndio', 'Linha de vida'] }) + '</div>' +
-      (repetidos.length ? '<div style="display:flex;flex-direction:column;gap:12px;justify-content:center"><div class="rm-subtit verm">Avisaram mais de uma vez</div>' +
-        rmCartoes(repetidos.map(function (x) {
-          const p = x[0].split('|');
-          return [RM_ICONE_ARM[p[1]] || '⚠️', rmCurtoArm(p[0]), p[1].toLowerCase() + ' · ' + x[1] + ' avisos'];
-        }), 'aberto', 1, true) + '</div>' : '') +
-    '</div>' +
-    rmFaixa('Conferentes registraram ' + achados.length + ' pontos de segurança no mês')));
-
-  // 3. Pendências dos administradores
-  slides.push(rmSlide('Armazém: pendências de segurança', 'ARMAZÉM',
-    rmEmpilhadas(gruposOrd.map(function (g) { return [g, grupos[g]]; }),
-      [['Finalizada', RM.VERDE, '#fff'], ['Resolvida, em validação', RM.VCLARO, RM.TXT], ['Em aberto', RM.VERM, '#fff']]) +
-    rmFaixa(pendSeg.length + ' pendências abertas pelos administradores' + (emAberto ? ' — ' + emAberto + ' ainda em aberto' : ' — nenhuma ficou sem solução'))));
-
-  // 4. Risco de tombamento
-  const linhasCausa = causas.slice(0, 3).map(function (c) { return [iconeCausa[c[0]] || '📦', c[0], c[1] + ' caso(s)']; });
-  if (baiasRep.length || ruasRep.length) {
-    linhasCausa.push(['🔁', 'Mesmo lugar de novo', baiasRep.map(function (b) { return b[0] + ' ' + b[1] + ' vezes'; })
-      .concat(ruasRep.map(function (rr) { return 'Arm. ' + rr[0].slice(1, 3) + ' rua ' + rr[0].slice(3) + ' ' + rr[1] + ' vezes'; })).slice(0, 2).join(' · ')]);
-  }
-  const corrigidosAdm = tombAdm.filter(function (p) { return st(p) === 0; }).length;
-  const validAdm = tombAdm.filter(function (p) { return st(p) === 1; }).length;
-  slides.push(rmSlide('Armazém: risco de tombamento', 'ARMAZÉM',
-    '<div class="rm-linha">' +
-      rmBarras(tombTodos.length + ' casos por armazém', tombPorArm, { destaque: tombPorArm[0] ? [tombPorArm[0][0]] : [] }) +
-      '<div style="flex:1.2;display:flex;flex-direction:column;gap:12px;justify-content:center"><div class="rm-subtit">Principais causas</div>' +
-        rmCartoes(linhasCausa, 'ok', 1, true) + '</div>' +
-    '</div>' +
-    rmFaixa('✓  ' + corrigidosAdm + ' já corrigidos · ' + validAdm + ' resolvidos aguardando validação · ' + tombConf.length + ' corrigidos na hora pelo conferente')));
-
-  // 5. Realizado
-  const nomesFeito = { 'Risco de tombamento': ['📦', 'tombamentos corrigidos', 'carga refeita, bag de cima retirado'],
-    'Palete quebrado': ['🪵', 'paletes quebrados', 'retirados ou trocados'],
-    'Material fora do lugar': ['🚚', 'corredores liberados', 'material fora do lugar retirado'],
-    'Caminho seguro obstruído': ['🚧', 'caminhos seguros liberados', 'limpeza e organização'] };
-  const feitos = gruposOrd.filter(function (g) { return grupos[g][0] > 0; }).map(function (g) {
-    const n = nomesFeito[g] || [RM_ICONE_ARM[g] || '✅', g.toLowerCase(), 'resolvido'];
-    return [n[0], grupos[g][0] + ' ' + n[1], n[2]];
-  });
-  manutConcluidas.slice(0, Math.max(0, 6 - feitos.length)).forEach(function (m) {
-    const cat = rmCategoriaSeguranca(m.TIPO + ' ' + (m.DESCRICAO || ''));
-    const concl = String(m.DESCRICAO_CONCLUSAO || '').trim();
-    const oque = String(m.DESCRICAO || m.TIPO || 'manutenção').replace(/\s+/g, ' ').slice(0, 55);
-    feitos.push([RM_ICONE_ARM[cat] || '🔧', rmCurtoArm(m.ARMAZEM) + ': ' + (cat || String(m.TIPO || 'manutenção')).toLowerCase(),
-      concl.length > 18 ? concl.replace(/\s+/g, ' ').slice(0, 55) : oque]);
-  });
-  slides.push(rmSlide('Armazém: o que foi realizado', 'ARMAZÉM',
-    rmDestaque([[finalizadas, 'pendências de segurança finalizadas'], [manutConcluidas.length, 'chamados de estrutura concluídos']]) +
-    rmCartoes(feitos.slice(0, 6), 'ok', 3)));
-
-  // 6. Estrutura e checklist semanal
-  const lista = manutAbertas.slice(0, 6).map(function (m) {
-    const s = statusTxt[m.STATUS] || [String(m.STATUS || '').toLowerCase().replace(/_/g, ' '), ''];
-    return '<div class="rm-lista-item"><span class="ic">' + (RM_ICONE_ARM[m.cat] || '🔧') + '</span><b>' + rmEsc(rmCurtoArm(m.ARMAZEM)) + '</b>' +
-      '<span>' + rmEsc(String(temTexto(m.DESCRICAO) ? m.DESCRICAO : m.TIPO || '').replace(/\s+/g, ' ').slice(0, 45)) + '</span><span class="st ' + s[1] + '">' + rmEsc(s[0]) + '</span></div>';
-  }).join('');
-  slides.push(rmSlide('Armazém: estrutura e checklist', 'ARMAZÉM',
-    '<div class="rm-linha">' +
-      '<div style="flex:1.4;display:flex;flex-direction:column;gap:12px"><div class="rm-subtit verm">Chamados do mês ainda abertos (' + manutAbertas.length + ')</div>' +
-        '<div class="rm-lista">' + (lista || '<p class="rm-vazio">✓ Nenhum chamado do mês em aberto.</p>') + '</div>' +
-        (manutAbertas.length > 6 ? '<p class="rm-nota">+ ' + (manutAbertas.length - 6) + ' outros chamados.</p>' : '') + '</div>' +
-      '<div style="display:flex;flex-direction:column;gap:12px;align-items:center"><div class="rm-subtit">Checklist semanal de segurança</div>' +
-        rmRosca([[semanalOk, RM.VERDE], [semanal.length - semanalOk, RM.LARANJA]], semanalPct === null ? '—' : semanalPct + '%', 200) +
-        '<div style="font-weight:700;font-size:18px">' + semanalOk + ' de ' + semanal.length + ' verificações OK</div>' +
-        '<div class="rm-nota" style="text-align:center">' + semanalPorItem.map(function (x) { return rmEsc(x[0]) + ' ' + x[1] + '/' + x[2]; }).join(' · ') + '</div>' +
-      '</div>' +
-    '</div>'));
-
-  slides.push(rmEncerramento());
-  return slides;
 }

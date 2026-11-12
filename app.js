@@ -428,6 +428,7 @@ function photoField(container, opts) {
       }
       document.body.removeChild(input);
       refresh();
+      avisarMudanca();
     };
     document.body.appendChild(input);
     input.click();
@@ -446,7 +447,7 @@ function photoField(container, opts) {
             '<button type="button" class="photo-thumb__rm" aria-label="Remover foto">✕</button>' +
           '</div>'
         );
-        thumb.querySelector('.photo-thumb__rm').onclick = function () { fotos.splice(i, 1); refresh(); };
+        thumb.querySelector('.photo-thumb__rm').onclick = function () { fotos.splice(i, 1); refresh(); avisarMudanca(); };
         grid.appendChild(thumb);
       });
       if (fotos.length < max) {
@@ -472,8 +473,15 @@ function photoField(container, opts) {
     }
   }
 
+  // Avisa quem estiver ouvindo (ex: rascunho do checklist) que as fotos mudaram.
+  function avisarMudanca() { wrap.dispatchEvent(new Event('change', { bubbles: true })); }
+
   refresh();
-  return { node: wrap, getValue: function () { return fotos.slice(); } };
+  return {
+    node: wrap,
+    getValue: function () { return fotos.slice(); },
+    setValue: function (lista) { fotos = (lista || []).slice(0, max); refresh(); }
+  };
 }
 
 // Botões SIM/NÃO
@@ -499,7 +507,10 @@ function choiceField(container, opts) {
     };
   });
   container.appendChild(wrap);
-  return { node: wrap, getValue: function () { return value; } };
+  return { node: wrap, getValue: function () { return value; }, setValue: function (v) {
+    const i = opts.options.map(function (o) { return o.value; }).indexOf(v);
+    if (i > -1) btns[i].click();
+  } };
 }
 
 function yesNoField(container, label) {
@@ -523,7 +534,11 @@ function yesNoField(container, label) {
     };
   });
   container.appendChild(wrap);
-  return { node: wrap, getValue: function () { return value; } };
+  return { node: wrap, getValue: function () { return value; }, setValue: function (v) {
+    if (v === null || v === undefined) return;
+    const b = wrap.querySelector('.option-btn[data-v="' + (v ? '1' : '0') + '"]');
+    if (b) b.click();
+  } };
 }
 
 function textField(container, opts) {
@@ -539,7 +554,7 @@ function textField(container, opts) {
   container.appendChild(wrap);
   const input = wrap.querySelector(tag);
   if (opts.value !== undefined && opts.value !== null && opts.value !== '') input.value = opts.value;
-  return { getValue: function () { return input.value.trim(); }, node: wrap };
+  return { getValue: function () { return input.value.trim(); }, node: wrap, setValue: function (v) { input.value = v || ''; } };
 }
 
 function selectField(container, opts) {
@@ -555,7 +570,10 @@ function selectField(container, opts) {
   );
   container.appendChild(wrap);
   const select = wrap.querySelector('select');
-  return { getValue: function () { return select.value; }, node: wrap, select: select };
+  return {
+    getValue: function () { return select.value; }, node: wrap, select: select,
+    setValue: function (v) { select.value = v || ''; select.dispatchEvent(new Event('change', { bubbles: true })); }
+  };
 }
 
 function screenHeader(eyebrow, title, subtitle) {
@@ -566,17 +584,93 @@ function screenHeader(eyebrow, title, subtitle) {
     '</div>';
 }
 
+// ------------------------- RECUPERAÇÃO APÓS RECARREGAR (Decisão 21) -------------------------
+// Problema visto em Jundiaí I: no Chrome do celular, ao abrir a câmera o
+// Android às vezes fecha a aba pra liberar memória; ao voltar, a página
+// recarrega do zero e o app "reinicia" (sessão e checklist só ficavam na
+// memória). Agora o app guarda no aparelho (IndexedDB, porque fotos não
+// cabem no sessionStorage):
+//   - a sessão (unidade, usuário) + tela/wizard atual, por até SESSAO_TTL_MS;
+//   - o rascunho do checklist (respostas + fotos), apagado ao enviar.
+// Tudo some no "Sair". Se o aparelho não deixar gravar, o app funciona como
+// antes (só perde a recuperação).
+const LOCAL_DB = 'gestao-armazens';
+const SESSAO_TTL_MS = 2 * 60 * 60 * 1000; // 2 h sem uso → pede login de novo
+const TELAS_RECUPERAVEIS = ['inspecao', 'checklist'];
+
+const localStore = (function () {
+  let dbPromise = null;
+  function db() {
+    if (!dbPromise) {
+      dbPromise = new Promise(function (resolve, reject) {
+        if (!window.indexedDB) { reject(new Error('sem indexedDB')); return; }
+        const req = indexedDB.open(LOCAL_DB, 1);
+        req.onupgradeneeded = function () { req.result.createObjectStore('kv'); };
+        req.onsuccess = function () { resolve(req.result); };
+        req.onerror = function () { reject(req.error); };
+      }).catch(function (e) { dbPromise = null; throw e; });
+    }
+    return dbPromise;
+  }
+  function tx(modo, fn) {
+    return db().then(function (d) {
+      return new Promise(function (resolve, reject) {
+        const t = d.transaction('kv', modo);
+        const r = fn(t.objectStore('kv'));
+        t.oncomplete = function () { resolve(r && r.result); };
+        t.onerror = t.onabort = function () { reject(t.error); };
+      });
+    }).catch(function () { return null; });
+  }
+  return {
+    get: function (k) { return tx('readonly', function (st) { return st.get(k); }); },
+    set: function (k, v) { return tx('readwrite', function (st) { st.put(v, k); }); },
+    del: function (k) { return tx('readwrite', function (st) { st.delete(k); }); },
+    clear: function () { return tx('readwrite', function (st) { st.clear(); }); }
+  };
+})();
+
+let timerSalvarSessao = null;
+function salvarSessao() {
+  clearTimeout(timerSalvarSessao);
+  timerSalvarSessao = setTimeout(function () {
+    if (!S.usuario || !S.unidade) { localStore.del('sessao'); return; }
+    localStore.set('sessao', {
+      em: Date.now(), unidade: S.unidade, papelLogin: S.papelLogin, usuario: S.usuario,
+      screen: S.screen, wizard: TELAS_RECUPERAVEIS.indexOf(S.screen) > -1 ? S.wizard : null
+    });
+  }, 200);
+}
+
+async function restaurarSessao() {
+  const s = await localStore.get('sessao');
+  if (!s || !s.usuario || !s.unidade || Date.now() - s.em > SESSAO_TTL_MS) return false;
+  S.unidade = s.unidade; S.papelLogin = s.papelLogin; S.usuario = s.usuario;
+  const home = S.usuario.TIPO === 'ADMIN' ? 'adminHome' : 'conferenteHome';
+  if (TELAS_RECUPERAVEIS.indexOf(s.screen) > -1 && s.wizard) { S.wizard = s.wizard; S.screen = s.screen; }
+  else S.screen = home;
+  if (typeof startNotificationPolling === 'function') { try { startNotificationPolling(); } catch (e) { /* opcional */ } }
+  return true;
+}
+
+// Rascunho de um formulário (respostas + fotos), por usuário/unidade.
+function chaveRascunho(nome) { return 'rascunho:' + S.unidade.UNIDADE + ':' + S.usuario.ID_USUARIO + ':' + nome; }
+
 // ------------------------- BOOT -------------------------
 
-document.getElementById('btnLogout').onclick = function () { resetSession(); render(); };
+document.getElementById('btnLogout').onclick = function () { resetSession(); localStore.clear(); render(); };
 document.getElementById('btnTrocarUnidadeGlobal').onclick = function () { go('trocarUnidadeGlobal'); };
 
-render();
+restaurarSessao().catch(function () { return false; }).then(function (voltou) {
+  render();
+  if (voltou) toast('Sessão recuperada — continue de onde parou.', false, true);
+});
 
 // ------------------------- ROUTER -------------------------
 
 function render() {
   app.innerHTML = '';
+  salvarSessao();
   const screens = {
     loginUnidade: renderLoginUnidade,
     trocarUnidadeGlobal: renderTrocarUnidadeGlobal,
@@ -611,7 +705,8 @@ function render() {
     dashPendencias: renderDashPendencias,
     configChecklist: renderConfigChecklist,
     dashboard: renderDashboardHub,
-    aprovacaoPendencias: renderAprovacaoPendencias
+    aprovacaoPendencias: renderAprovacaoPendencias,
+    relatorioMensal: renderRelatorioMensal
   };
   (screens[S.screen] || renderLoginUnidade)();
   updateChrome();
@@ -1447,7 +1542,14 @@ function renderBalancaForm(container) {
       if (obs.getValue()) partes.push('Obs: ' + obs.getValue());
       return partes.join(' | ');
     },
-    getFotos: function () { return foto.getValue(); }
+    getFotos: function () { return foto.getValue(); },
+    snapshot: function () {
+      return { campos: campos.map(function (c) { return c.campo.getValue(); }), obs: obs.getValue(), manut: manutencao.getValue(), fotos: foto.getValue() };
+    },
+    restore: function (d) {
+      (d.campos || []).forEach(function (v, i) { if (campos[i] && v) campos[i].campo.setValue(v); });
+      obs.setValue(d.obs); if (d.manut) manutencao.setValue(d.manut); foto.setValue(d.fotos);
+    }
   };
 }
 
@@ -1526,6 +1628,8 @@ function renderChecklist() {
           const escolha = choiceField(box, { label: 'Resposta', columns: opcoes.length > 2 ? 3 : (opcoes.length || 1), options: opcoes.map(function (o) { return { value: o, label: o }; }) });
           return {
             item: it.item, especial: true,
+            snapshot: function () { return { v: escolha.getValue() }; },
+            restore: function (d) { if (d.v) escolha.setValue(d.v); },
             validate: function () { return !!escolha.getValue(); },
             build: function () { return { item: it.item, resultado: escolha.getValue(), observacao: '', fotos: [] }; }
           };
@@ -1535,6 +1639,7 @@ function renderChecklist() {
           const balanca = renderBalancaForm(box);
           return {
             item: it.item, especial: true,
+            snapshot: balanca.snapshot, restore: balanca.restore,
             validate: balanca.validate,
             build: function () { return { item: it.item, resultado: balanca.getResultado(), observacao: balanca.getObservacao(), fotos: balanca.getFotos() }; }
           };
@@ -1557,6 +1662,12 @@ function renderChecklist() {
           });
           return {
             item: it.item, especial: true,
+            snapshot: function () { return { yn: yn.getValue(), obs: obsField ? obsField.getValue() : '', fotos: fotoField ? fotoField.getValue() : [] }; },
+            restore: function (d) {
+              if (d.yn === null || d.yn === undefined) return;
+              yn.setValue(d.yn);
+              if (d.yn) { if (obsField) obsField.setValue(d.obs); if (fotoField) fotoField.setValue(d.fotos); }
+            },
             validate: function () { return yn.getValue() !== null && (!yn.getValue() || (fotoField && fotoField.getValue().length > 0)); },
             build: function () {
               const houve = yn.getValue();
@@ -1583,6 +1694,12 @@ function renderChecklist() {
         const foto = photoField(box, { label: 'Foto (opcional)' });
         return {
           item: it.item, especial: false,
+          snapshot: function () { return { sel: sel.getValue(), manut: manutField ? manutField.getValue() : '', fotos: foto.getValue() }; },
+          restore: function (d) {
+            if (d.sel) sel.setValue(d.sel);
+            if (manutField) manutField.setValue(d.manut);
+            foto.setValue(d.fotos);
+          },
           validate: function () { return !!sel.getValue() && (sel.getValue() !== 'NECESSITA_MANUTENCAO' || !!(manutField && manutField.getValue())); },
           build: function () { return { item: it.item, resultado: sel.getValue(), observacao: manutField ? manutField.getValue() : '', fotos: foto.getValue() }; }
         };
@@ -1611,6 +1728,12 @@ function renderChecklist() {
         });
         refs.push({
           item: 'Não conformidade', especial: true,
+          snapshot: function () { return { yn: ncYn.getValue(), obs: ncObs ? ncObs.getValue() : '', fotos: ncFoto ? ncFoto.getValue() : [] }; },
+          restore: function (d) {
+            if (d.yn === null || d.yn === undefined) return;
+            ncYn.setValue(d.yn);
+            if (d.yn) { if (ncObs) ncObs.setValue(d.obs); if (ncFoto) ncFoto.setValue(d.fotos); }
+          },
           validate: function () { return ncYn.getValue() !== null && (!ncYn.getValue() || (ncObs && !!ncObs.getValue())); },
           build: function () {
             const houve = ncYn.getValue();
@@ -1618,6 +1741,32 @@ function renderChecklist() {
           }
         });
       }
+
+      // Rascunho: salva respostas + fotos no aparelho a cada mudança, e
+      // recupera se a página tiver recarregado (ex: Chrome fechou a aba
+      // enquanto a câmera estava aberta). Vale só para o mesmo dia.
+      const chave = chaveRascunho('checklist:' + w.periodicidade + ':' + w.armazem);
+      const hoje = dateToBR(new Date());
+      let timerRascunho = null, restaurando = true;
+      function salvarRascunho() {
+        if (restaurando) return;
+        clearTimeout(timerRascunho);
+        timerRascunho = setTimeout(function () {
+          const respostas = {};
+          refs.forEach(function (r) { try { respostas[r.item] = r.snapshot(); } catch (e) { /* ignora item */ } });
+          localStore.set(chave, { dia: hoje, respostas: respostas });
+        }, 300);
+      }
+      ['change', 'input', 'click'].forEach(function (ev) { card.addEventListener(ev, salvarRascunho); });
+      localStore.get(chave).then(function (rasc) {
+        if (rasc && rasc.dia === hoje && rasc.respostas) {
+          refs.forEach(function (r) { const d = rasc.respostas[r.item]; if (d) { try { r.restore(d); } catch (e) { /* ignora item */ } } });
+          toast('Checklist recuperado — suas respostas e fotos foram mantidas.', false, true);
+        } else if (rasc) {
+          localStore.del(chave);
+        }
+        restaurando = false;
+      });
 
       const btn = el('<button class="btn btn--primary btn--block" style="margin-top:6px">Enviar checklist</button>');
       card.appendChild(btn);
@@ -1631,6 +1780,8 @@ function renderChecklist() {
         try {
           await api('createChecklist', { unidade: S.unidade.UNIDADE, usuario: S.usuario.NOME, idUsuario: S.usuario.ID_USUARIO, armazem: w.armazem, periodicidade: w.periodicidade, itens: payloadItens });
           toast('Checklist enviado com sucesso!', false, true);
+          clearTimeout(timerRascunho); restaurando = true;
+          localStore.del(chave);
           S.wizard = null;
           go('conferenteHome');
         } catch (e) { btn.disabled = false; btn.textContent = 'Enviar checklist'; }
@@ -2201,6 +2352,7 @@ function renderAdminHome() {
     '<div class="stack">' +
       menuCard('📊', 'Dashboard', 'Painel do dia, resumo geral, pendências, carunchos, ocorrências, manutenções, mapas e limpeza', 'dashboard') +
       menuCard('📄', 'Relatórios', 'Baixar relatórios em CSV (Excel/Sheets)', 'relatorios') +
+      menuCard('🖨️', 'Apresentação mensal', 'Slides de segurança do mês para imprimir ou salvar em PDF', 'relatorioMensal') +
       menuCard('✅', 'Validação de inspeções', 'Revisar inspeções dos conferentes', 'validacaoInspecoes') +
       menuCard('🗂️', 'Aprovação de pendências', 'Soluções enviadas pelos conferentes, aguardando validação', 'aprovacaoPendencias') +
       menuCard('➕', 'Registrar pendência', 'Abrir uma pendência manualmente', 'registrarPendencia') +
@@ -4955,4 +5107,498 @@ function scorePorArmazemCard(score) {
   // o valor mostrado no topo de cada barra é o score (%), não a contagem crua
   card.querySelectorAll('.chart-col__val').forEach(function (v, i) { v.textContent = entries[i][1] + '%'; });
   return card;
+}
+
+// ======================= RELATÓRIO MENSAL EM SLIDES =======================
+// [NOV/2026] Apresentação mensal para a reunião de gestores: slides 16:9 no
+// visual ICC, montados no próprio navegador com os dados que o app já busca.
+// Botão "Imprimir / salvar PDF" usa a impressão do navegador (uma página por
+// slide). Nada disso depende do Apps Script além das leituras de sempre.
+const RM = {
+  W: 1280, H: 720,
+  VERDE: '#436722', VERDE2: '#5E9030', VCLARO: '#B9D697', TINT: '#EEF4E7',
+  LARANJA: '#DF8630', LARANJA_C: '#FDF1E4', VERM: '#C0392B', VERM_C: '#FBE9E7',
+  TXT: '#1F2937', CINZA: '#5B6472', CINZA_C: '#E3E7EC',
+  LOGO: 'logo.png'
+};
+const RM_MESES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+
+function rmEsc(v) { return escapeHtml(v === null || v === undefined ? '' : String(v)); }
+function rmNum(v, casas) {
+  const n = Number(v) || 0;
+  const f = Math.pow(10, casas || 0);
+  return String(Math.round(n * f) / f).replace('.', ',');
+}
+// Data em qualquer formato que as planilhas devolvem: ISO, dd/mm/aaaa
+// (com ou sem hora) ou objeto Date.
+function rmData(v) {
+  if (v === null || v === undefined || v === '') return null;
+  if (v instanceof Date) return isNaN(v) ? null : v;
+  const s = String(v).trim();
+  const br = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T,]+(\d{1,2}):(\d{2}))?/);
+  if (br) return new Date(+br[3], +br[2] - 1, +br[1], +(br[4] || 0), +(br[5] || 0));
+  const d = new Date(s);
+  return isNaN(d) ? null : d;
+}
+function rmNoMes(v, mes) {
+  const d = rmData(v);
+  return !!d && d >= mes.inicio && d < mes.fim;
+}
+function rmMesSelecionado(valor) { // valor = 'AAAA-MM'
+  const p = String(valor || '').split('-');
+  const ano = +p[0], m = +p[1] - 1;
+  const inicio = new Date(ano, m, 1), fim = new Date(ano, m + 1, 1);
+  const ultimo = new Date(ano, m + 1, 0);
+  const iso = function (d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+  const br = function (d) { return String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + d.getFullYear(); };
+  return {
+    inicio: inicio, fim: fim, nome: RM_MESES[m], ano: ano,
+    rotulo: RM_MESES[m] + ' ' + ano, isoIni: iso(inicio), isoFim: iso(ultimo), brIni: br(inicio), brFim: br(ultimo)
+  };
+}
+function rmMesPassado() {
+  const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+}
+function rmMediana(lista) {
+  const v = lista.filter(function (x) { return x !== null && !isNaN(x); }).sort(function (a, b) { return a - b; });
+  if (!v.length) return null;
+  const m = Math.floor(v.length / 2);
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
+function rmContar(lista, fn) {
+  const c = {};
+  lista.forEach(function (x) { const k = fn(x); if (k) c[k] = (c[k] || 0) + 1; });
+  return c;
+}
+function rmOrdenar(obj) {
+  return Object.keys(obj).map(function (k) { return [k, obj[k]]; }).sort(function (a, b) { return b[1] - a[1]; });
+}
+function rmSemAcento(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase(); }
+
+// ---------- peças dos slides ----------
+function rmSlide(titulo, etiqueta, corpo) {
+  return '<section class="rm-slide">' +
+    '<div class="rm-marca"><i></i><i></i></div>' +
+    '<h2 class="rm-titulo">' + rmEsc(titulo) + '</h2>' +
+    (etiqueta ? '<span class="rm-etiqueta">' + rmEsc(etiqueta) + '</span>' : '') +
+    '<div class="rm-corpo">' + corpo + '</div>' +
+    '<div class="rm-rodape"></div><img class="rm-logo" src="' + RM.LOGO + '" alt="ICC">' +
+  '</section>';
+}
+function rmCapa(titulo, mes, sub, secao, icone) {
+  return '<section class="rm-slide rm-capa">' +
+    '<img class="rm-capa-logo" src="' + RM.LOGO + '" alt="ICC">' +
+    '<div class="rm-capa-txt"><span class="rm-capa-secao">' + rmEsc(secao) + '</span>' +
+    '<h1>' + rmEsc(titulo) + '</h1><h1 class="rm-capa-mes">' + rmEsc(mes.nome) + ' <small>' + mes.ano + '</small></h1>' +
+    '<p>' + rmEsc(sub) + '</p></div>' +
+    '<div class="rm-capa-hex"><span>' + (icone || '') + '</span></div>' +
+    '<div class="rm-rodape"></div>' +
+  '</section>';
+}
+function rmEncerramento() {
+  return '<section class="rm-slide rm-fim"><img src="' + RM.LOGO + '" alt="ICC"><div class="rm-rodape"></div></section>';
+}
+function rmFaixa(texto) { return '<div class="rm-faixa">' + rmEsc(texto) + '</div>'; }
+function rmKpi(numero, rotulo, cor) {
+  return '<div class="rm-tile"><div class="rm-kpi-num" style="color:' + (cor || RM.VERDE) + '">' + rmEsc(numero) + '</div>' +
+    '<div class="rm-kpi-rot">' + rmEsc(rotulo) + '</div></div>';
+}
+function rmRosca(partes, centro, tam) {
+  // partes = [[valor, cor], ...]
+  const total = partes.reduce(function (s, p) { return s + (Number(p[0]) || 0); }, 0) || 1;
+  let acc = 0;
+  const fatias = partes.map(function (p) {
+    const ini = acc / total * 360; acc += Number(p[0]) || 0;
+    return p[1] + ' ' + ini + 'deg ' + (acc / total * 360) + 'deg';
+  });
+  if (!partes.some(function (p) { return Number(p[0]) > 0; })) fatias.splice(0, fatias.length, RM.CINZA_C + ' 0deg 360deg');
+  tam = tam || 190;
+  return '<div class="rm-rosca" style="width:' + tam + 'px;height:' + tam + 'px;background:conic-gradient(' + fatias.join(',') + ')">' +
+    '<div class="rm-rosca-furo" style="font-size:' + Math.round(tam / 6.5) + 'px">' + rmEsc(centro) + '</div></div>';
+}
+function rmKpiRosca(partes, centro, rotulo) {
+  return '<div class="rm-tile">' + rmRosca(partes, centro, 180) + '<div class="rm-kpi-rot">' + rmEsc(rotulo) + '</div></div>';
+}
+// Barras horizontais: itens = [[rótulo, valor]], destaque = lista de rótulos em laranja.
+function rmBarras(titulo, itens, opt) {
+  opt = opt || {};
+  const max = Math.max.apply(null, itens.map(function (i) { return i[1]; }).concat([0])) || 1;
+  const fmt = opt.fmt || function (v) { return rmNum(v); };
+  let h = '<div class="rm-graf">' + (titulo ? '<div class="rm-graf-tit">' + rmEsc(titulo) + '</div>' : '');
+  if (!itens.length) h += '<p class="rm-vazio">' + rmEsc(opt.vazio || 'Nada registrado no mês.') + '</p>';
+  itens.forEach(function (i) {
+    const cor = (opt.destaque || []).indexOf(i[0]) > -1 ? RM.LARANJA : (opt.cor || RM.VERDE2);
+    h += '<div class="rm-barra"><span class="rm-barra-rot">' + rmEsc(i[0]) + '</span>' +
+      '<span class="rm-barra-trilho"><span style="width:' + Math.max(1.5, i[1] / max * 100) + '%;background:' + cor + '"></span></span>' +
+      '<span class="rm-barra-val">' + rmEsc(fmt(i[1])) + '</span></div>';
+  });
+  return h + '</div>';
+}
+// Barras empilhadas: itens = [[rótulo, [v1, v2]]], series = [[nome, cor, corTexto]]
+function rmEmpilhadas(itens, series) {
+  const max = Math.max.apply(null, itens.map(function (i) { return i[1].reduce(function (a, b) { return a + b; }, 0); }).concat([0])) || 1;
+  let h = '<div class="rm-graf"><div class="rm-legenda">' + series.map(function (s) {
+    return '<span><i style="background:' + s[1] + '"></i>' + rmEsc(s[0]) + '</span>';
+  }).join('') + '</div>';
+  itens.forEach(function (i) {
+    h += '<div class="rm-barra rm-barra--alta"><span class="rm-barra-rot">' + rmEsc(i[0]) + '</span><span class="rm-barra-trilho rm-barra-trilho--empilhada">';
+    i[1].forEach(function (v, k) {
+      if (v > 0) h += '<span style="width:' + (v / max * 100) + '%;background:' + series[k][1] + ';color:' + series[k][2] + '">' + v + '</span>';
+    });
+    h += '</span></div>';
+  });
+  return h + '</div>';
+}
+// Cartões com ícone: itens = [[ícone, título, descrição]]
+function rmCartoes(itens, tipo, colunas, compacto) {
+  if (!itens.length) return '<p class="rm-vazio">Nada para mostrar neste mês.</p>';
+  return '<div class="rm-cartoes rm-cartoes--' + (tipo || 'ok') + (compacto ? ' rm-cartoes--compacto' : '') + '" style="grid-template-columns:repeat(' + (colunas || 3) + ',1fr)">' +
+    itens.map(function (c) {
+      return '<div class="rm-cartao"><span class="rm-bola">' + c[0] + '</span><div><strong>' + rmEsc(c[1]) + '</strong><small>' + rmEsc(c[2]) + '</small></div></div>';
+    }).join('') + '</div>';
+}
+function rmDestaque(partes) { // [[número, texto], ...] em linha
+  return '<div class="rm-destaque">' + partes.map(function (p) {
+    return '<span><b>' + rmEsc(p[0]) + '</b> ' + rmEsc(p[1]) + '</span>';
+  }).join('<em>·</em>') + '</div>';
+}
+
+// ---------- tela: escolher mês, ver os slides e imprimir ----------
+// montar(mes) devolve uma Promise com a lista de slides (HTML).
+function rmTela(opcoes) {
+  appendHtml(app, screenHeader(opcoes.eyebrow || 'Relatório mensal', opcoes.titulo, opcoes.subtitulo));
+  if (opcoes.voltar) {
+    const voltar = el('<button class="btn btn--outline btn--sm" style="align-self:flex-start;margin-top:-6px">← Voltar</button>');
+    voltar.onclick = function () { go(opcoes.voltar); };
+    app.appendChild(voltar);
+  }
+  const topo = el(
+    '<div class="card stack rm-controles">' +
+      '<div class="field"><label>Mês da apresentação</label><input type="month" data-role="mes"></div>' +
+      '<div class="row" style="gap:8px;flex-wrap:wrap">' +
+        '<button class="btn btn--primary" data-role="gerar">Montar slides</button>' +
+        '<button class="btn btn--accent" data-role="imprimir" disabled>🖨️ Imprimir / salvar PDF</button>' +
+      '</div>' +
+      '<p class="subtle" style="margin:0;font-size:12.5px">Na janela de impressão, escolha "Salvar como PDF" e deixe as margens em "Nenhuma". Cada slide sai numa página.</p>' +
+    '</div>');
+  app.appendChild(topo);
+  const inpMes = topo.querySelector('[data-role="mes"]');
+  inpMes.value = S.rmMes || rmMesPassado();
+  inpMes.max = new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0');
+  const btnGerar = topo.querySelector('[data-role="gerar"]');
+  const btnImp = topo.querySelector('[data-role="imprimir"]');
+  const area = el('<div class="rm-previa"></div>');
+  app.appendChild(area);
+
+  function escalar() {
+    const w = area.clientWidth || 360;
+    const k = Math.min(1, w / RM.W);
+    area.querySelectorAll('.rm-moldura').forEach(function (m) {
+      m.style.height = (RM.H * k) + 'px';
+      m.firstElementChild.style.transform = 'scale(' + k + ')';
+    });
+  }
+  window.addEventListener('resize', escalar);
+
+  let geracao = 0;
+  async function gerar() {
+    const minha = ++geracao;
+    S.rmMes = inpMes.value;
+    const mes = rmMesSelecionado(inpMes.value);
+    btnGerar.disabled = true; btnImp.disabled = true;
+    area.innerHTML = '<p class="subtle">Buscando os dados de ' + rmEsc(mes.rotulo) + '…</p>';
+    let slides = null;
+    try { slides = await opcoes.montar(mes); } catch (e) { console.error(e); slides = null; }
+    if (minha !== geracao) return;
+    btnGerar.disabled = false;
+    if (!slides) { area.innerHTML = typeof blocoFalhaCarregar === 'function' ? blocoFalhaCarregar() : '<p class="subtle">Não foi possível carregar agora. Tente de novo.</p>'; return; }
+    area.innerHTML = '';
+    slides.forEach(function (html) {
+      const m = el('<div class="rm-moldura"></div>');
+      m.innerHTML = html;
+      area.appendChild(m);
+    });
+    escalar();
+    btnImp.disabled = false;
+    btnImp.onclick = function () { rmImprimir(slides, opcoes.nomeArquivo + ' ' + mes.rotulo); };
+  }
+  btnGerar.onclick = gerar;
+  inpMes.onchange = gerar;
+  gerar();
+}
+
+function rmImprimir(slides, nome) {
+  const antigo = document.getElementById('rm-impressao');
+  if (antigo) antigo.remove();
+  const raiz = document.createElement('div');
+  raiz.id = 'rm-impressao';
+  raiz.innerHTML = slides.join('');
+  document.body.appendChild(raiz);
+  document.body.classList.add('rm-imprimindo');
+  const tituloAntigo = document.title;
+  document.title = nome; // vira o nome sugerido do PDF
+  const limpar = function () {
+    document.body.classList.remove('rm-imprimindo');
+    document.title = tituloAntigo;
+    raiz.remove();
+    window.removeEventListener('afterprint', limpar);
+  };
+  window.addEventListener('afterprint', limpar);
+  // Espera as imagens (logo) carregarem antes de abrir a impressão.
+  const imgs = Array.prototype.slice.call(raiz.querySelectorAll('img'));
+  Promise.all(imgs.map(function (i) { return i.complete ? 0 : new Promise(function (r) { i.onload = i.onerror = r; }); }))
+    .then(function () { setTimeout(function () { window.print(); }, 50); });
+}
+
+// ------------------------- RELATÓRIO MENSAL — ARMAZÉM -------------------------
+// O que entra como "segurança": risco de tombamento, goteira (piso
+// molhado), palete quebrado ou fora do lugar, estrutura e piso, iluminação,
+// portas, combate a incêndio, linha de vida, elétrica e caminho seguro.
+// Sujidade, limpeza, produto avariado e balança ficam de fora.
+function rmCategoriaSeguranca(texto) {
+  const s = rmSemAcento(texto);
+  if (!s.trim()) return null;
+  const regras = [
+    [/ilumina|lampada|sem luz|escuro/, 'Iluminação'],
+    [/extintor|hidrante|incendio/, 'Combate a incêndio'],
+    [/linha de vida/, 'Linha de vida'],
+    [/tomb|risco de queda/, 'Risco de tombamento'],
+    [/palete|pallet|estrado|grade|bags? fora/, 'Palete quebrado / fora do lugar'],
+    [/pilar|estrutura|parede|piso|trinca|rachad|fissura|buraco|chao|telha|cedendo|sedendo/, 'Estrutura e piso'],
+    [/porta|portao/, 'Porta que não fecha'],
+    [/fiacao|fios? solt|eletric|tomada|quadro de forca/, 'Elétrica'],
+    [/caminho seguro/, 'Caminho seguro']
+  ];
+  for (let i = 0; i < regras.length; i++) if (regras[i][0].test(s)) return regras[i][1];
+  return null;
+}
+const RM_ICONE_ARM = {
+  'Iluminação': '💡', 'Combate a incêndio': '🔥', 'Linha de vida': '🦺', 'Risco de tombamento': '📦',
+  'Palete quebrado / fora do lugar': '🪵', 'Estrutura e piso': '🏗️', 'Porta que não fecha': '🚪', 'Elétrica': '⚡',
+  'Caminho seguro': '🚧', 'Goteira (piso molhado)': '💧'
+};
+const RM_ITENS_SEMANAIS = ['Extintores', 'Painel elétrico', 'Carregadores', 'Estrutura de ferro', 'Caminhos seguros'];
+function rmGrupoPendencia(p) {
+  const t = rmSemAcento(p.TIPO), d = rmSemAcento(p.DESCRICAO);
+  if (/tomb|queda/.test(t)) return 'Risco de tombamento';
+  if (/palete quebrado/.test(t) || /quebrad/.test(d)) return 'Palete quebrado';
+  if (/desorganiza|lona fora|fora do local|palete fora/.test(t)) return 'Material fora do lugar';
+  if (/caminho seguro/.test(d) || /caminho seguro/.test(t)) return 'Caminho seguro obstruído';
+  if (/estrutura|ilumina|porta|extintor|eletric/.test(t)) return rmCategoriaSeguranca(t);
+  return null;
+}
+function rmArmazemDaBaia(texto, armazemPadrao) {
+  const m = String(texto || '').toUpperCase().match(/M\s?0?(\d)\s?[A-Z]/);
+  return m ? 'Armazém 0' + m[1] : String(armazemPadrao || '').trim();
+}
+function rmBaia(texto) {
+  const m = String(texto || '').toUpperCase().match(/M\s?0?(\d)\s?([A-Z])\s?(\d{1,2})/);
+  return m ? 'M0' + m[1] + m[2] + String(+m[3]).padStart(2, '0') : null;
+}
+function temTexto(v) { return v !== null && v !== undefined && String(v).trim() !== '' && String(v) !== 'null'; }
+function rmCurtoArm(a) { return String(a || '').trim().replace(/^Armaz[ée]m\s*/i, 'Arm. ').replace(/^ALMOX$/i, 'Almox'); }
+function rmDataBR(v) { const d = rmData(v); return d ? String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0') : ''; }
+
+async function renderRelatorioMensal() {
+  rmTela({
+    titulo: 'Apresentação de segurança',
+    subtitulo: 'Slides do mês para a reunião de gestores · ' + S.unidade.UNIDADE,
+    voltar: 'adminHome',
+    nomeArquivo: 'Segurança Armazém ' + S.unidade.UNIDADE,
+    montar: rmMontarArmazem
+  });
+}
+
+RM.LOGO = 'logo-relatorio.png';
+const RM_PRIORIDADE_ARM = ['Combate a incêndio', 'Linha de vida', 'Estrutura e piso', 'Porta que não fecha', 'Iluminação', 'Elétrica', 'Caminho seguro', 'Palete quebrado / fora do lugar'];
+function rmPrioridade(cat) { const i = RM_PRIORIDADE_ARM.indexOf(cat); return i === -1 ? 99 : i; }
+
+async function rmMontarArmazem(mes) {
+  const base = { unidade: S.unidade.UNIDADE, armazem: '', dataInicial: mes.brIni, dataFinal: mes.brFim };
+  const r = await Promise.all([
+    api('getResumoGeral', base).catch(function () { return null; }),
+    api('getDashboardOcorrencias', base),
+    api('getDashboardPendencias', base),
+    api('getDashboardChecklist', base),
+    api('getManutencoes', { unidade: S.unidade.UNIDADE, armazem: '', status: '' }).catch(function () { return []; }),
+    api('getInspecoes', { unidade: S.unidade.UNIDADE, armazem: '', status: '' }).catch(function () { return []; })
+  ]);
+  const resumo = r[0] || {};
+  const ocorr = ((r[1] && r[1].registros) || []).filter(function (o) { return rmNoMes(o.DATA, mes); });
+  const pend = ((r[2] && r[2].registros) || []).filter(function (p) { return rmNoMes(p.DATA_ABERTURA, mes); });
+  const chk = ((r[3] && r[3].registros) || []).filter(function (c) { return rmNoMes(c.DATA, mes); });
+  const manut = r[4] || [];
+  const insp = (r[5] || []).filter(function (i) { return rmNoMes(i.DATA, mes); });
+  const totalInspecoes = resumo.totalInspecoes !== undefined ? resumo.totalInspecoes : insp.length;
+
+  // ---- o que os conferentes registraram ----
+  const achados = [];
+  const vistos = {};
+  const anotar = function (data, armazem, cat, texto) {
+    if (!cat) return;
+    const chave = rmDataBR(data) + '|' + String(armazem).trim() + '|' + cat;
+    if (vistos[chave]) return;
+    vistos[chave] = true;
+    achados.push({ data: data, armazem: String(armazem || '').trim(), cat: cat, texto: texto });
+  };
+  ocorr.forEach(function (o) {
+    if (/tomb|queda/i.test(o.TIPO)) anotar(o.DATA, o.ARMAZEM, 'Risco de tombamento', o.DESCRICAO);
+    else if (/goteira/i.test(o.TIPO)) achados.push({ data: o.DATA, armazem: String(o.ARMAZEM || '').trim(), cat: 'Goteira (piso molhado)', texto: o.DESCRICAO });
+  });
+  chk.forEach(function (c) {
+    const res = String(c.RESULTADO || '').toUpperCase();
+    if (['NAO_CONFORME', 'NECESSITA_MANUTENCAO', 'INOPERANTE'].indexOf(res) === -1) return;
+    if (/balan|aspirador/i.test(c.ITEM)) return;
+    const obs = String(c.OBSERVACAO || '').trim();
+    const cat = obs ? rmCategoriaSeguranca(obs) : (RM_ITENS_SEMANAIS.indexOf(c.ITEM) > -1 ? rmCategoriaSeguranca(c.ITEM) : null);
+    anotar(c.DATA, c.ARMAZEM, cat, obs || c.ITEM);
+  });
+  insp.forEach(function (i) { anotar(i.DATA, i.ARMAZEM, rmCategoriaSeguranca(i.OBSERVACAO), i.OBSERVACAO); });
+  const porCatConf = rmOrdenar(rmContar(achados, function (a) { return a.cat; }));
+  const repetidos = rmOrdenar(rmContar(achados.filter(function (a) { return !/Goteira|tombamento/.test(a.cat); }), function (a) { return a.armazem + '|' + a.cat; }))
+    .filter(function (x) { return x[1] >= 2; }).slice(0, 3);
+
+  // ---- pendências dos administradores ----
+  const pendSeg = pend.map(function (p) { return Object.assign({ grupo: rmGrupoPendencia(p) }, p); }).filter(function (p) { return p.grupo; });
+  const st = function (p) { const s = String(p.STATUS); return s === 'FINALIZADA' ? 0 : s === 'AGUARDANDO_VALIDACAO' ? 1 : 2; };
+  const grupos = {};
+  pendSeg.forEach(function (p) { (grupos[p.grupo] = grupos[p.grupo] || [0, 0, 0])[st(p)]++; });
+  const gruposOrd = Object.keys(grupos).sort(function (a, b) {
+    return grupos[b].reduce(function (x, y) { return x + y; }) - grupos[a].reduce(function (x, y) { return x + y; });
+  });
+  const finalizadas = pendSeg.filter(function (p) { return st(p) === 0; }).length;
+  const emValidacao = pendSeg.filter(function (p) { return st(p) === 1; }).length;
+  const emAberto = pendSeg.length - finalizadas - emValidacao;
+  const horasResolver = rmMediana(pendSeg.map(function (p) {
+    const a = rmData(p.DATA_ABERTURA), f = rmData(p.DATA_RESOLUCAO);
+    return a && f ? (f - a) / 3600000 : null;
+  }));
+
+  // ---- risco de tombamento (conferentes + administradores) ----
+  const tombConf = ocorr.filter(function (o) { return /tomb|queda/i.test(o.TIPO); });
+  const tombAdm = pendSeg.filter(function (p) { return p.grupo === 'Risco de tombamento'; });
+  const tombTodos = tombConf.map(function (o) { return { arm: rmArmazemDaBaia(o.DESCRICAO, o.ARMAZEM), baia: rmBaia(o.DESCRICAO), txt: o.DESCRICAO }; })
+    .concat(tombAdm.map(function (p) { return { arm: rmArmazemDaBaia(p.DESCRICAO, p.ARMAZEM), baia: rmBaia(p.DESCRICAO), txt: p.DESCRICAO + ' ' + (p.DESCRICAO_SOLUCAO || '') }; }));
+  const tombPorArm = rmOrdenar(rmContar(tombTodos, function (t) { return t.arm; }));
+  const causas = rmOrdenar(rmContar(tombTodos, function (t) {
+    const s = rmSemAcento(t.txt);
+    if (/terceiro|3o de alto|3 de alto|3º/.test(s)) return 'Bag no 3º de altura';
+    if (/estrado|palete quebr|pallet quebr/.test(s)) return 'Estrado ou palete quebrado';
+    if (/fumiga/.test(s)) return 'Carga em fumigação';
+    if (/paletiz|carga|alinh|refe|emblocamento|pilha/.test(s)) return 'Carga mal montada';
+    return null;
+  }));
+  const baiasRep = rmOrdenar(rmContar(tombTodos, function (t) { return t.baia; })).filter(function (x) { return x[1] >= 2; });
+  const ruasRep = rmOrdenar(rmContar(tombTodos, function (t) { return t.baia ? t.baia.slice(0, 4) : null; })).filter(function (x) { return x[1] >= 3; });
+  const iconeCausa = { 'Bag no 3º de altura': '📦', 'Estrado ou palete quebrado': '🪵', 'Carga em fumigação': '🧪', 'Carga mal montada': '🧱' };
+
+  // ---- estrutura e checklist semanal ----
+  const statusTxt = { NAO_INICIADO: ['não iniciado', ''], EM_ANDAMENTO: ['em andamento', 'and'], AGUARDANDO_APROVACAO: ['aguardando aprovação', 'and'] };
+  const manutMes = manut.filter(function (m) { return rmNoMes(m.DATA_ABERTURA, mes); });
+  const manutAbertas = manutMes.filter(function (m) { return String(m.STATUS) !== 'FINALIZADA'; })
+    .map(function (m) { return Object.assign({ cat: rmCategoriaSeguranca(m.TIPO + ' ' + (m.DESCRICAO || '')) }, m); })
+    .sort(function (a, b) {
+      const grave = function (m) { return /pilar|cedendo|sedendo|buraco|urgente/i.test(String(m.DESCRICAO || '')); };
+      const pa = a.cat === 'Estrutura e piso' ? (grave(a) ? 1.5 : 5.5) : rmPrioridade(a.cat);
+      const pb = b.cat === 'Estrutura e piso' ? (grave(b) ? 1.5 : 5.5) : rmPrioridade(b.cat);
+      return pa - pb;
+    });
+  const manutConcluidas = manut.filter(function (m) { return rmNoMes(m.DATA_CONCLUSAO, mes); });
+  const semanal = chk.filter(function (c) { return RM_ITENS_SEMANAIS.indexOf(c.ITEM) > -1; });
+  const semanalOk = semanal.filter(function (c) { return /^OK$/i.test(String(c.RESULTADO)); }).length;
+  const semanalPct = semanal.length ? Math.round(semanalOk / semanal.length * 100) : null;
+  const semanalPorItem = RM_ITENS_SEMANAIS.map(function (it) {
+    const l = semanal.filter(function (c) { return c.ITEM === it; });
+    return [it, l.filter(function (c) { return /^OK$/i.test(String(c.RESULTADO)); }).length, l.length];
+  }).filter(function (x) { return x[2]; });
+
+  const slides = [rmCapa('SEGURANÇA', mes, S.unidade.UNIDADE, 'Gestão de Armazém', '🏭')];
+
+  // 1. Resumo
+  slides.push(rmSlide('Armazém em ' + mes.nome.toLowerCase(), 'ARMAZÉM',
+    '<div class="rm-linha">' +
+      rmKpi(totalInspecoes, 'inspeções nos armazéns e almoxarifado') +
+      rmKpiRosca([[finalizadas, RM.VERDE], [emValidacao, RM.VCLARO], [emAberto, RM.CINZA_C]], (finalizadas + emValidacao) + '/' + pendSeg.length, 'pendências de segurança tratadas') +
+      rmKpi(tombTodos.length, 'riscos de tombamento encontrados', RM.VERM) +
+      rmKpi(horasResolver === null ? '—' : (horasResolver < 48 ? rmNum(horasResolver) + ' h' : rmNum(horasResolver / 24, 1) + ' dias'), 'tempo típico para resolver', RM.LARANJA) +
+    '</div>' +
+    rmFaixa(pendSeg.length && !emAberto ? '✓  Todas as pendências de segurança tiveram solução — ' + finalizadas + ' finalizadas, ' + emValidacao + ' em validação'
+      : pendSeg.length + ' pendências de segurança · ' + finalizadas + ' finalizadas, ' + emValidacao + ' em validação, ' + emAberto + ' em aberto')));
+
+  // 2. Conferentes
+  slides.push(rmSlide('Armazém: achados dos conferentes', 'ARMAZÉM',
+    '<div class="rm-linha">' +
+      '<div style="flex:1.5">' + rmBarras(achados.length + ' registros de segurança nas inspeções e checklists', porCatConf,
+        { destaque: ['Risco de tombamento', 'Estrutura e piso', 'Combate a incêndio', 'Linha de vida'] }) + '</div>' +
+      (repetidos.length ? '<div style="display:flex;flex-direction:column;gap:12px;justify-content:center"><div class="rm-subtit verm">Avisaram mais de uma vez</div>' +
+        rmCartoes(repetidos.map(function (x) {
+          const p = x[0].split('|');
+          return [RM_ICONE_ARM[p[1]] || '⚠️', rmCurtoArm(p[0]), p[1].toLowerCase() + ' · ' + x[1] + ' avisos'];
+        }), 'aberto', 1, true) + '</div>' : '') +
+    '</div>' +
+    rmFaixa('Conferentes registraram ' + achados.length + ' pontos de segurança no mês')));
+
+  // 3. Pendências dos administradores
+  slides.push(rmSlide('Armazém: pendências de segurança', 'ARMAZÉM',
+    rmEmpilhadas(gruposOrd.map(function (g) { return [g, grupos[g]]; }),
+      [['Finalizada', RM.VERDE, '#fff'], ['Resolvida, em validação', RM.VCLARO, RM.TXT], ['Em aberto', RM.VERM, '#fff']]) +
+    rmFaixa(pendSeg.length + ' pendências abertas pelos administradores' + (emAberto ? ' — ' + emAberto + ' ainda em aberto' : ' — nenhuma ficou sem solução'))));
+
+  // 4. Risco de tombamento
+  const linhasCausa = causas.slice(0, 3).map(function (c) { return [iconeCausa[c[0]] || '📦', c[0], c[1] + ' caso(s)']; });
+  if (baiasRep.length || ruasRep.length) {
+    linhasCausa.push(['🔁', 'Mesmo lugar de novo', baiasRep.map(function (b) { return b[0] + ' ' + b[1] + ' vezes'; })
+      .concat(ruasRep.map(function (rr) { return 'Arm. ' + rr[0].slice(1, 3) + ' rua ' + rr[0].slice(3) + ' ' + rr[1] + ' vezes'; })).slice(0, 2).join(' · ')]);
+  }
+  const corrigidosAdm = tombAdm.filter(function (p) { return st(p) === 0; }).length;
+  const validAdm = tombAdm.filter(function (p) { return st(p) === 1; }).length;
+  slides.push(rmSlide('Armazém: risco de tombamento', 'ARMAZÉM',
+    '<div class="rm-linha">' +
+      rmBarras(tombTodos.length + ' casos por armazém', tombPorArm, { destaque: tombPorArm[0] ? [tombPorArm[0][0]] : [] }) +
+      '<div style="flex:1.2;display:flex;flex-direction:column;gap:12px;justify-content:center"><div class="rm-subtit">Principais causas</div>' +
+        rmCartoes(linhasCausa, 'ok', 1, true) + '</div>' +
+    '</div>' +
+    rmFaixa('✓  ' + corrigidosAdm + ' já corrigidos · ' + validAdm + ' resolvidos aguardando validação · ' + tombConf.length + ' corrigidos na hora pelo conferente')));
+
+  // 5. Realizado
+  const nomesFeito = { 'Risco de tombamento': ['📦', 'tombamentos corrigidos', 'carga refeita, bag de cima retirado'],
+    'Palete quebrado': ['🪵', 'paletes quebrados', 'retirados ou trocados'],
+    'Material fora do lugar': ['🚚', 'corredores liberados', 'material fora do lugar retirado'],
+    'Caminho seguro obstruído': ['🚧', 'caminhos seguros liberados', 'limpeza e organização'] };
+  const feitos = gruposOrd.filter(function (g) { return grupos[g][0] > 0; }).map(function (g) {
+    const n = nomesFeito[g] || [RM_ICONE_ARM[g] || '✅', g.toLowerCase(), 'resolvido'];
+    return [n[0], grupos[g][0] + ' ' + n[1], n[2]];
+  });
+  manutConcluidas.slice(0, Math.max(0, 6 - feitos.length)).forEach(function (m) {
+    const cat = rmCategoriaSeguranca(m.TIPO + ' ' + (m.DESCRICAO || ''));
+    const concl = String(m.DESCRICAO_CONCLUSAO || '').trim();
+    const oque = String(m.DESCRICAO || m.TIPO || 'manutenção').replace(/\s+/g, ' ').slice(0, 55);
+    feitos.push([RM_ICONE_ARM[cat] || '🔧', rmCurtoArm(m.ARMAZEM) + ': ' + (cat || String(m.TIPO || 'manutenção')).toLowerCase(),
+      concl.length > 18 ? concl.replace(/\s+/g, ' ').slice(0, 55) : oque]);
+  });
+  slides.push(rmSlide('Armazém: o que foi realizado', 'ARMAZÉM',
+    rmDestaque([[finalizadas, 'pendências de segurança finalizadas'], [manutConcluidas.length, 'chamados de estrutura concluídos']]) +
+    rmCartoes(feitos.slice(0, 6), 'ok', 3)));
+
+  // 6. Estrutura e checklist semanal
+  const lista = manutAbertas.slice(0, 6).map(function (m) {
+    const s = statusTxt[m.STATUS] || [String(m.STATUS || '').toLowerCase().replace(/_/g, ' '), ''];
+    return '<div class="rm-lista-item"><span class="ic">' + (RM_ICONE_ARM[m.cat] || '🔧') + '</span><b>' + rmEsc(rmCurtoArm(m.ARMAZEM)) + '</b>' +
+      '<span>' + rmEsc(String(temTexto(m.DESCRICAO) ? m.DESCRICAO : m.TIPO || '').replace(/\s+/g, ' ').slice(0, 45)) + '</span><span class="st ' + s[1] + '">' + rmEsc(s[0]) + '</span></div>';
+  }).join('');
+  slides.push(rmSlide('Armazém: estrutura e checklist', 'ARMAZÉM',
+    '<div class="rm-linha">' +
+      '<div style="flex:1.4;display:flex;flex-direction:column;gap:12px"><div class="rm-subtit verm">Chamados do mês ainda abertos (' + manutAbertas.length + ')</div>' +
+        '<div class="rm-lista">' + (lista || '<p class="rm-vazio">✓ Nenhum chamado do mês em aberto.</p>') + '</div>' +
+        (manutAbertas.length > 6 ? '<p class="rm-nota">+ ' + (manutAbertas.length - 6) + ' outros chamados.</p>' : '') + '</div>' +
+      '<div style="display:flex;flex-direction:column;gap:12px;align-items:center"><div class="rm-subtit">Checklist semanal de segurança</div>' +
+        rmRosca([[semanalOk, RM.VERDE], [semanal.length - semanalOk, RM.LARANJA]], semanalPct === null ? '—' : semanalPct + '%', 200) +
+        '<div style="font-weight:700;font-size:18px">' + semanalOk + ' de ' + semanal.length + ' verificações OK</div>' +
+        '<div class="rm-nota" style="text-align:center">' + semanalPorItem.map(function (x) { return rmEsc(x[0]) + ' ' + x[1] + '/' + x[2]; }).join(' · ') + '</div>' +
+      '</div>' +
+    '</div>'));
+
+  slides.push(rmEncerramento());
+  return slides;
 }
